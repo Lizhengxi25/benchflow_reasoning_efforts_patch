@@ -120,6 +120,37 @@ def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
     return launch
 
 
+def _apply_reasoning_effort(launch: str, agent: str, effort: str | None) -> str:
+    """Append the agent's reasoning-effort flag to a launch command.
+
+    ``effort`` is the validated value coming from ``RolloutConfig`` (None when
+    the caller did not request an override).  The flag template lives on the
+    agent's ``AgentConfig.reasoning_effort_flag`` and is expected to be a
+    space-separable string like ``"-c model_reasoning_effort={value}"`` —
+    bash word-splits it inside the sandbox so each ``-c key=value`` lands as
+    its own argv item.
+
+    Agents without a configured flag (the default for everything except
+    codex-acp) raise ``ValueError``: silently no-oping would mask config
+    typos and produce experiments whose results look like a successful
+    reasoning-effort sweep but are not.
+    """
+    if not effort:
+        return launch
+    agent_cfg = AGENTS.get(agent)
+    flag_tmpl = getattr(agent_cfg, "reasoning_effort_flag", "")
+    if not flag_tmpl:
+        raise ValueError(
+            f"agent {agent!r} does not support --reasoning-effort "
+            f"(no reasoning_effort_flag in its AgentConfig). Supported "
+            f"agents: "
+            + ", ".join(
+                name for name, cfg in AGENTS.items() if cfg.reasoning_effort_flag
+            )
+        )
+    return launch + " " + flag_tmpl.format(value=effort)
+
+
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
     """Read skill nudge from explicit agent env or the host environment."""
     return (agent_env or {}).get("BENCHFLOW_SKILL_NUDGE") or os.environ.get(
@@ -707,10 +738,24 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
+    # Per-run agent reasoning-effort knob (minimal/low/medium/high/xhigh).
+    # Only meaningful for agents whose AgentConfig sets
+    # ``reasoning_effort_flag``; otherwise ``Rollout.setup`` raises.  Lives
+    # at the RolloutConfig level (not on Scene) because every rollout the
+    # CLI/SDK builds today is single-effort — when multi-effort scenes
+    # become a thing, promote this to ``Role`` and have ``effective_scenes``
+    # fan it out.
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
+        # Local import avoids the module-load-time cycle between rollout.py
+        # and agents/registry.py (registry imports nothing from rollout, but
+        # rollout already pulls in registry symbols lazily elsewhere).
+        from benchflow.agents.registry import normalize_reasoning_effort
+
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
@@ -924,6 +969,14 @@ class Rollout:
         self._agent_launch = _agent_launch_with_web_policy(
             cfg.primary_agent,
             disallow=self._disallow_web_tools,
+        )
+        # Append the per-run reasoning-effort flag (if any) AFTER the no-web
+        # suffix so the bash word-splitting order stays predictable; the
+        # final launch string looks like
+        #   /opt/benchflow/bin/codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=...} -c model_reasoning_effort=low
+        # and produces clean argv tokens.
+        self._agent_launch = _apply_reasoning_effort(
+            self._agent_launch, cfg.primary_agent, cfg.reasoning_effort
         )
 
         # Copy task dir to temp when Dockerfile mutations are needed
@@ -1737,6 +1790,13 @@ class Rollout:
         agent_launch = _agent_launch_with_web_policy(
             role.agent,
             disallow=disallow_web_tools,
+        )
+        # Same reasoning-effort knob as the primary-agent launch path.  All
+        # roles in a rollout share the config-level value today; if/when
+        # per-role effort becomes a thing, promote this onto Role and read
+        # role.reasoning_effort here instead of cfg.reasoning_effort.
+        agent_launch = _apply_reasoning_effort(
+            agent_launch, role.agent, cfg.reasoning_effort
         )
         agent_env = _apply_web_policy(
             resolve_agent_env(

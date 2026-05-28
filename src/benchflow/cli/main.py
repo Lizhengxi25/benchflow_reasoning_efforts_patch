@@ -224,12 +224,26 @@ def run(
             help="Run agent as non-root user (default: 'agent'). Pass 'none' for root.",
         ),
     ] = "agent",
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(
+            "--reasoning-effort",
+            help=(
+                "Agent reasoning effort: minimal|low|medium|high|xhigh. "
+                "Only honored by agents whose AgentConfig declares "
+                "reasoning_effort_flag (currently: codex-acp). Passing "
+                "this flag to an unsupported agent fails fast at rollout "
+                "setup."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run a single task with an ACP agent.
 
     Examples:
         bench run --source-repo benchflow-ai/skillsbench --source-path tasks/edit-pdf
         bench run tasks/edit-pdf --agent gemini --model gemini-3.1-flash-lite-preview
+        bench run tasks/edit-pdf --agent codex-acp --reasoning-effort high
     """
     from benchflow.sdk import SDK
 
@@ -266,6 +280,7 @@ def run(
             skill_mode=skill_mode,
             skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
             self_gen_no_internet=self_gen_no_internet,
+            reasoning_effort=reasoning_effort,
         )
     )
 

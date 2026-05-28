@@ -264,6 +264,47 @@ class AgentConfig:
     disallow_web_tools_launch_suffix: str = ""
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
+    reasoning_effort_flag: str = ""
+    # Launch-arg template that injects per-run reasoning effort, e.g.
+    # ``"-c model_reasoning_effort={value}"`` for codex-acp.  When set, the
+    # rollout appends ``" " + flag.format(value=<effort>)`` to launch_cmd
+    # right after the no-web suffix; the resulting string is word-split by
+    # bash inside the sandbox so each ``-c key=value`` arrives as a
+    # separate argv item.  Empty (the default) means the agent does not
+    # support runtime reasoning-effort overrides — passing
+    # ``--reasoning-effort`` to such an agent raises ``ValueError`` at
+    # setup, not silently no-ops.
+
+
+# Accepted values for ``--reasoning-effort``.  Mirrors the Codex CLI's
+# ``model_reasoning_effort`` TOML field (see
+# https://developers.openai.com/codex/config-sample).  We validate at the
+# BenchFlow boundary so a typo fails fast instead of silently degrading
+# to the agent's built-in default mid-rollout.
+REASONING_EFFORT_VALUES: tuple[str, ...] = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+
+
+def normalize_reasoning_effort(value: str | None) -> str | None:
+    """Return the validated reasoning-effort value, or ``None`` if unset.
+
+    Raises ``ValueError`` on typos.  Called from ``RolloutConfig.__post_init__``
+    (and indirectly from the CLI) so misuse surfaces before any container is
+    spun up.
+    """
+    if value in (None, ""):
+        return None
+    if value not in REASONING_EFFORT_VALUES:
+        raise ValueError(
+            f"reasoning_effort must be one of {REASONING_EFFORT_VALUES}, "
+            f"got {value!r}"
+        )
+    return value
 
 
 # Agent registry — all supported agents
@@ -373,6 +414,12 @@ AGENTS: dict[str, AgentConfig] = {
             ],
         ),
         disallow_web_tools_launch_suffix=" -c tools.web_search=false",
+        # Codex CLI exposes reasoning effort via `model_reasoning_effort`
+        # in ~/.codex/config.toml; the binary also accepts `-c key=value`
+        # overrides that take precedence over the file.  The `value` is
+        # parsed as TOML and falls back to a raw string on parse failure,
+        # so passing a bare word like `low` works without quoting.
+        reasoning_effort_flag="-c model_reasoning_effort={value}",
     ),
     "gemini": AgentConfig(
         name="gemini",

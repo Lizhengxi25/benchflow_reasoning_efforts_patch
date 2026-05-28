@@ -168,8 +168,16 @@ class SDK:
         skill_mode: str = "default",
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
+        reasoning_effort: str | None = None,
     ) -> RolloutResult:
-        """Run a task — delegates to :func:`benchflow.run`."""
+        """Run a task — delegates to :func:`benchflow.run`.
+
+        ``reasoning_effort``: per-run override for agents whose AgentConfig
+        sets ``reasoning_effort_flag`` (currently only ``codex-acp``).
+        Accepted values: minimal/low/medium/high/xhigh.  Validated in
+        ``RolloutConfig.__post_init__``; passing the kwarg to an agent that
+        does not support it raises during ``Rollout.setup``.
+        """
         from benchflow.rollout import RolloutConfig
         from benchflow.runtime import run
 
@@ -192,5 +200,6 @@ class SDK:
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
+            reasoning_effort=reasoning_effort,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
