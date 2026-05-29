@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Fork: `feat/reasoning-effort` (off upstream 7a479e9, 2026-05-29)
+
+Not yet upstreamed — lives on
+[`Lizhengxi25/benchflow_reasoning_efforts_patch`](https://github.com/Lizhengxi25/benchflow_reasoning_efforts_patch)
+branch `feat/reasoning-effort`, commit `483d138`.
+
+#### Added
+
+- **`bench run --reasoning-effort`** — surfaces a per-run reasoning effort
+  knob for coding agents whose model accepts one. Values
+  `minimal|low|medium|high|xhigh` (mirrors the Codex CLI
+  `model_reasoning_effort` TOML key) are validated upfront in
+  `RolloutConfig.__post_init__`.
+- **`AgentConfig.reasoning_effort_flag`** — per-agent launch-arg template
+  with `{value}` placeholder; rolls up into the launch command after the
+  no-web suffix. `codex-acp` gets `"-c model_reasoning_effort={value}"`;
+  every other agent stays empty and raises a clear `ValueError` at
+  `Rollout.setup` if `--reasoning-effort` is passed. The bash word-split
+  inside the sandbox keeps each `-c key=value` as a separate argv item.
+- **`SDK.run(reasoning_effort=...)`** kwarg, plumbed through to the new
+  `RolloutConfig.reasoning_effort` field.
+
+#### Affects
+
+- `src/benchflow/agents/registry.py` — field + `REASONING_EFFORT_VALUES` +
+  `normalize_reasoning_effort()` validator.
+- `src/benchflow/rollout.py` — `RolloutConfig` field; `_apply_reasoning_effort`
+  helper; called at the two `_agent_launch` computation sites (primary
+  setup and `connect_as` for additional roles).
+- `src/benchflow/sdk.py` — kwarg.
+- `src/benchflow/cli/main.py` — `bench run` typer Option.
+
 ## 0.3.3 — 2026-05-15
 
 ### Added
