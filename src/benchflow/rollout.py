@@ -562,7 +562,9 @@ def _resolve_prompts(
     return [p if p is not None else instruction for p in prompts]
 
 
-async def _start_env_and_upload(env: Any, task_path: Path, timing: dict) -> None:
+async def _start_env_and_upload(
+    env: Any, task_path: Path, timing: dict, *, skills_dir: str | Path | None = None
+) -> None:
     """Start environment and upload task files."""
     logger.info(f"Starting environment: {task_path.name}")
     t0 = datetime.now()
@@ -570,9 +572,10 @@ async def _start_env_and_upload(env: Any, task_path: Path, timing: dict) -> None
     timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
-    task_skills = task_path / "environment" / "skills"
-    if task_skills.is_dir():
-        await env.upload_dir(task_skills, "/app/skills")
+    if skills_dir:
+        task_skills = task_path / "environment" / "skills"
+        if task_skills.is_dir():
+            await env.upload_dir(task_skills, "/app/skills")
     if (task_path / "solution").is_dir():
         await env.upload_dir(task_path / "solution", "/solution")
 
@@ -1032,7 +1035,10 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
-        await _start_env_and_upload(self._env, self._config.task_path, self._timing)
+        await _start_env_and_upload(
+            self._env, self._config.task_path, self._timing,
+            skills_dir=self._config.skills_dir,
+        )
 
         for hook in self._config.pre_agent_hooks or []:
             await hook(self._env)

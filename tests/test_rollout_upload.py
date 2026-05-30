@@ -43,14 +43,22 @@ async def test_start_env_uploads_task_environment_skills(tmp_path: Path) -> None
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
+    # Without skills_dir, skills should NOT be uploaded
     await _start_env_and_upload(env, task, timing)
 
     task_skills = task / "environment" / "skills"
     assert env.started is True
     assert (task / "instruction.md", "/instruction.md") in env.uploaded_files
-    assert (task_skills, "/app/skills") in env.uploaded_dirs
+    assert (task_skills, "/app/skills") not in env.uploaded_dirs
     assert (task / "solution", "/solution") in env.uploaded_dirs
     assert "environment_setup" in timing
+
+    # With skills_dir set, skills SHOULD be uploaded
+    env2 = FakeUploadEnv()
+    timing2: dict[str, float] = {}
+    await _start_env_and_upload(env2, task, timing2, skills_dir=str(task_skills))
+
+    assert (task_skills, "/app/skills") in env2.uploaded_dirs
 
 
 @pytest.mark.asyncio
