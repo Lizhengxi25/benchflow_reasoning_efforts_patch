@@ -1360,6 +1360,12 @@ class Rollout:
 
         if self._env:
             try:
+                await self._harvest_codex_native_session()
+            except Exception as e:
+                logger.warning(f"Codex native session harvest failed: {e}")
+
+        if self._env:
+            try:
                 await stop_provider_runtime(getattr(self, "_provider_runtime", None))
                 self._provider_runtime = None
             except Exception as e:
@@ -1477,6 +1483,43 @@ class Rollout:
         target = Path(export_target)
         target.mkdir(parents=True, exist_ok=True)
         await self._env.download_dir(self._config.generated_skills_root, target)
+
+    async def _harvest_codex_native_session(self) -> None:
+        """Copy codex's own native session jsonl out of the sandbox.
+
+        The codex-acp ACP stream is lossy: read/search tool *results* and all
+        reasoning are dropped. But codex (the CLI core codex-acp wraps) still
+        persists a complete session jsonl to ``$HOME/.codex/sessions`` inside the
+        container (full ``function_call`` + ``function_call_output``). Grab the
+        newest one before teardown so the judge can read real tool I/O. No-op for
+        non-codex agents (no ``.codex/sessions`` => nothing harvested).
+        """
+        agent_name = self._agent_name or self._config.primary_agent or ""
+        if not agent_name.startswith("codex"):
+            return
+        if self._env is None or self._rollout_dir is None:
+            return
+        home = (
+            f"/home/{self._config.sandbox_user}"
+            if self._config.sandbox_user
+            else "/root"
+        )
+        find_cmd = (
+            f"find {home}/.codex/sessions -name 'rollout-*.jsonl' "
+            f"-printf '%T@ %p\\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-"
+        )
+        result = await self._env.exec(find_cmd, user="root", timeout_sec=20)
+        src = (getattr(result, "stdout", "") or "").strip()
+        if not src:
+            logger.warning(
+                "Codex native session harvest: no rollout-*.jsonl under "
+                f"{home}/.codex/sessions (codex-acp may run ephemerally)"
+            )
+            return
+        dst = self._rollout_dir / "trajectory" / "codex_native_session.jsonl"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        await self._env.download_file(src, dst)
+        logger.info(f"Harvested codex native session: {src} -> {dst}")
 
     async def _activate_scene_skills(self, scene: Scene) -> None:
         """Activate scene-local skills by linking them into role discovery paths."""

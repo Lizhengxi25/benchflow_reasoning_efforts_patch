@@ -23,6 +23,15 @@ branch `feat/reasoning-effort`, commit `483d138`.
   inside the sandbox keeps each `-c key=value` as a separate argv item.
 - **`SDK.run(reasoning_effort=...)`** kwarg, plumbed through to the new
   `RolloutConfig.reasoning_effort` field.
+- **Codex native-session harvest** (2026-05-30) — `codex-acp`'s ACP stream is
+  lossy (drops `read`/`search` tool results and all reasoning), but the
+  underlying `codex` core still persists a complete session JSONL to
+  `$HOME/.codex/sessions/**/rollout-*.jsonl` inside the sandbox.
+  `Rollout._harvest_codex_native_session` copies the newest one out to
+  `trajectory/codex_native_session.jsonl` in `cleanup()` (after skill export,
+  before `env.stop`), so a downstream judge can read full `function_call` +
+  `function_call_output` tool I/O. No-op for non-codex agents; harvest failure
+  is logged and never aborts the rollout.
 
 #### Affects
 
@@ -30,7 +39,8 @@ branch `feat/reasoning-effort`, commit `483d138`.
   `normalize_reasoning_effort()` validator.
 - `src/benchflow/rollout.py` — `RolloutConfig` field; `_apply_reasoning_effort`
   helper; called at the two `_agent_launch` computation sites (primary
-  setup and `connect_as` for additional roles).
+  setup and `connect_as` for additional roles). Also
+  `Rollout._harvest_codex_native_session` + its `cleanup()` call.
 - `src/benchflow/sdk.py` — kwarg.
 - `src/benchflow/cli/main.py` — `bench run` typer Option.
 
