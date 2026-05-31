@@ -572,10 +572,6 @@ async def _start_env_and_upload(
     timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
-    if skills_dir:
-        task_skills = task_path / "environment" / "skills"
-        if task_skills.is_dir():
-            await env.upload_dir(task_skills, "/app/skills")
     if (task_path / "solution").is_dir():
         await env.upload_dir(task_path / "solution", "/solution")
 
