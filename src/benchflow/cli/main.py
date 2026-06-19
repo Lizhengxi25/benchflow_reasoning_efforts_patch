@@ -237,6 +237,39 @@ def run(
             ),
         ),
     ] = None,
+    prompt_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt-prefix",
+            help=(
+                "Text prepended BEFORE the task query (NOT the OpenAI system "
+                "prompt). Overridden by --prompt-file when both are given."
+            ),
+        ),
+    ] = None,
+    prompt_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--prompt-file",
+            help="Read the pre-query prompt prefix from this file (wins over --prompt-prefix).",
+        ),
+    ] = None,
+    capture_workspace: Annotated[
+        bool,
+        typer.Option(
+            "--capture-workspace",
+            help="Before teardown, snapshot the agent working dir (/app) to "
+            "rollout_dir/artifacts/workspace.tgz (excludes node_modules/.venv/.git/…).",
+        ),
+    ] = False,
+    skip_verify: Annotated[
+        bool,
+        typer.Option(
+            "--skip-verify",
+            help="Skip the verify phase (test.sh + pre-verify hardening). Use for "
+            "rollout-only runs with no real verifier / external judging.",
+        ),
+    ] = False,
 ) -> None:
     """Run a single task with an ACP agent.
 
@@ -262,6 +295,8 @@ def run(
     parsed_env = _parse_agent_env(agent_env)
     agent = _normalize_eval_agent_or_exit(agent)
     sandbox_user = normalize_sandbox_user(sandbox_user)
+    # Pre-query prompt prefix (NOT the OpenAI system prompt): file wins over inline.
+    prompt_prefix_text = prompt_file.read_text() if prompt_file else prompt_prefix
 
     sdk = SDK()
     # CLI only ever passes plain strings; cast to widen for the SDK's
@@ -281,6 +316,9 @@ def run(
             skill_creator_dir=str(skill_creator_dir) if skill_creator_dir else None,
             self_gen_no_internet=self_gen_no_internet,
             reasoning_effort=reasoning_effort,
+            prompt_prefix=prompt_prefix_text,
+            capture_workspace=capture_workspace,
+            skip_verify=skip_verify,
         )
     )
 
