@@ -65,6 +65,7 @@ class SDK:
         skills_dir: str | Path | None = None,
         skill_nudge: str = "",
         agent: str | None = None,
+        prompt_prefix: str | None = None,
     ) -> list[str]:
         return _resolve_prompts(
             task_path,
@@ -72,6 +73,7 @@ class SDK:
             skills_dir=skills_dir,
             skill_nudge=skill_nudge,
             agent=agent,
+            prompt_prefix=prompt_prefix,
         )
 
     @staticmethod
@@ -169,6 +171,9 @@ class SDK:
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
         reasoning_effort: str | None = None,
+        prompt_prefix: str | None = None,
+        capture_workspace: bool = False,
+        skip_verify: bool = False,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -201,5 +206,8 @@ class SDK:
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
             reasoning_effort=reasoning_effort,
+            prompt_prefix=prompt_prefix,
+            capture_workspace=capture_workspace,
+            skip_verify=skip_verify,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

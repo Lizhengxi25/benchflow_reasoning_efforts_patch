@@ -95,6 +95,13 @@ SKILL_MODE_DEFAULT = "default"
 SKILL_MODE_SELF_GEN = "self-gen"
 GENERATED_SKILLS_ROOT = "/app/generated-skills"
 
+# Heavy dependency/build/VCS dirs excluded when capturing the agent workspace
+# (capture_workspace) — they bloat the tarball and aren't what the agent authored.
+DEFAULT_WORKSPACE_CAPTURE_EXCLUDES = [
+    "node_modules", ".venv", "venv", ".git", "__pycache__",
+    ".pytest_cache", ".mypy_cache", "dist", "build", ".gradle", "target", ".next",
+]
+
 
 def _task_disallows_internet(task: Any) -> bool:
     """Return True when task.toml requests no internet for the agent task."""
@@ -500,6 +507,7 @@ def _resolve_prompts(
     skills_dir: str | Path | None = None,
     skill_nudge: str = "",
     agent: str | None = None,
+    prompt_prefix: str | None = None,
 ) -> list[str]:
     """Read instruction.md and resolve prompt list."""
     instruction_path = task_path / "instruction.md"
@@ -557,21 +565,43 @@ def _resolve_prompts(
                     )
                 instruction = "\n\n".join(blocks) + "\n\n" + instruction
 
+    # Pre-query prompt prefix (skillsbench --prompt/--prompt-file). Prepended at
+    # the very top, ahead of any skill nudge, so the agent reads it before the
+    # task query. This is NOT an OpenAI system prompt.
+    if prompt_prefix:
+        instruction = prompt_prefix.strip() + "\n\n" + instruction
+
     if prompts is None:
         return [instruction]
     return [p if p is not None else instruction for p in prompts]
 
 
 async def _start_env_and_upload(
-    env: Any, task_path: Path, timing: dict, *, skills_dir: str | Path | None = None
+    env: Any, task_path: Path, timing: dict, upload_task_skills: bool = True
 ) -> None:
-    """Start environment and upload task files."""
+    """Start environment and upload task files.
+
+    ``upload_task_skills`` gates the working-dir copy of ``environment/skills/``
+    into ``/app/.agents/skills/`` (the agent cwd's skills dir). Skill
+    *activation* — placing skills on the agent's HOME discovery path
+    (``~/.agents/skills`` → ``/skills``) — is handled separately by
+    ``deploy_skills``; this cwd copy is only useful when skills are active, and
+    uploading it unconditionally leaks skill content into the workspace of
+    no-skill rollouts. Defaults to True so the SDK shim / other callers are
+    unchanged.
+    """
     logger.info(f"Starting environment: {task_path.name}")
     t0 = datetime.now()
     await env.start(force_build=False)
     timing["environment_setup"] = (datetime.now() - t0).total_seconds()
     if (task_path / "instruction.md").exists():
         await env.upload_file(task_path / "instruction.md", "/instruction.md")
+    task_skills = task_path / "environment" / "skills"
+    if upload_task_skills and task_skills.is_dir():
+        # cwd-local copy under .agents/skills (mkdir -p: /app/.agents doesn't
+        # exist in the base image, and `docker cp` won't create nested parents).
+        await env.exec("mkdir -p /app/.agents/skills", timeout_sec=10)
+        await env.upload_dir(task_skills, "/app/.agents/skills")
     if (task_path / "solution").is_dir():
         await env.upload_dir(task_path / "solution", "/solution")
 
@@ -745,6 +775,17 @@ class RolloutConfig:
     # become a thing, promote this to ``Role`` and have ``effective_scenes``
     # fan it out.
     reasoning_effort: str | None = None
+    # Text prepended BEFORE the task query at prompt-resolution time (ahead of
+    # any skill nudge). NOT the OpenAI system prompt. Threaded from
+    # ``bench run --prompt-prefix/--prompt-file``. None = no prefix.
+    prompt_prefix: str | None = None
+    # Snapshot the agent working dir (/app) to rollout_dir/artifacts/workspace.tgz
+    # before sandbox teardown, excluding heavy dirs. Threaded from
+    # ``bench run --capture-workspace``.
+    capture_workspace: bool = False
+    workspace_capture_excludes: list[str] = field(
+        default_factory=lambda: list(DEFAULT_WORKSPACE_CAPTURE_EXCLUDES)
+    )
 
     def __post_init__(self) -> None:
         # Local import avoids the module-load-time cycle between rollout.py
@@ -964,6 +1005,7 @@ class Rollout:
             skills_dir=cfg.skills_dir,
             skill_nudge=_skill_nudge(cfg.agent_env),
             agent=cfg.primary_agent,
+            prompt_prefix=cfg.prompt_prefix,
         )
         self._agent_launch = _agent_launch_with_web_policy(
             cfg.primary_agent,
@@ -1031,9 +1073,20 @@ class Rollout:
 
     async def start(self) -> None:
         """Start the environment and upload task files."""
+        # Only copy environment/skills/ into the working dir (/app/skills) when
+        # skills are actually active for this rollout — otherwise it leaks skill
+        # content into no-skill runs. Activation onto the agent's discovery path
+        # is handled separately by deploy_skills().
+        cfg = self._config
+        skills_active = bool(cfg.skills_dir) or (
+            cfg.include_task_skills
+            and bool(self._task.config.environment.skills_dir)
+        )
         await _start_env_and_upload(
-            self._env, self._config.task_path, self._timing,
-            skills_dir=self._config.skills_dir,
+            self._env,
+            cfg.task_path,
+            self._timing,
+            upload_task_skills=skills_active,
         )
 
         for hook in self._config.pre_agent_hooks or []:
@@ -1360,6 +1413,12 @@ class Rollout:
             except Exception as e:
                 logger.warning(f"Generated skill export failed: {e}")
 
+        if self._env and self._config.capture_workspace:
+            try:
+                await self._capture_workspace()
+            except Exception as e:
+                logger.warning(f"Workspace capture failed: {e}")
+
         if self._env:
             try:
                 await self._harvest_codex_native_session()
@@ -1522,6 +1581,28 @@ class Rollout:
         dst.parent.mkdir(parents=True, exist_ok=True)
         await self._env.download_file(src, dst)
         logger.info(f"Harvested codex native session: {src} -> {dst}")
+
+    async def _capture_workspace(self) -> None:
+        """Snapshot the agent working dir to artifacts/workspace.tgz before teardown.
+
+        Tars the agent cwd (``/app``) inside the container — excluding heavy
+        dependency/build/VCS dirs — then downloads the single archive to the host
+        rollout dir. Mirrors :meth:`_export_generated_skills` (cleanup-time, pre-stop).
+        """
+        cwd = self._agent_cwd or "/app"
+        # `tar --exclude=NAME` (GNU tar, unanchored) drops any dir named NAME at
+        # any depth; archive members are `./…` from `-C <cwd> .`.
+        ex = " ".join(
+            f"--exclude={shlex.quote(e)}" for e in self._config.workspace_capture_excludes
+        )
+        remote = "/tmp/bf_workspace.tgz"
+        await self._env.exec(
+            f"tar czf {remote} {ex} -C {shlex.quote(cwd)} . 2>/dev/null || true",
+            user="root",
+        )
+        dest = self._rollout_paths.artifacts_dir / "workspace.tgz"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await self._env.download_file(remote, dest)
 
     async def _activate_scene_skills(self, scene: Scene) -> None:
         """Activate scene-local skills by linking them into role discovery paths."""
