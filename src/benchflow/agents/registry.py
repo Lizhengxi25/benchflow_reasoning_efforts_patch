@@ -390,7 +390,9 @@ AGENTS: dict[str, AgentConfig] = {
         skill_paths=["$HOME/.agents/skills"],
         install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
         launch_cmd=_js_agent_launch(
-            "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+            "codex-acp",
+            "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL} "
+            "-c sandbox_mode=workspace-write",
         ),
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],

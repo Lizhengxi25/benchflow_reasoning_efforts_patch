@@ -1014,7 +1014,7 @@ class Rollout:
         # Append the per-run reasoning-effort flag (if any) AFTER the no-web
         # suffix so the bash word-splitting order stays predictable; the
         # final launch string looks like
-        #   /opt/benchflow/bin/codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=...} -c model_reasoning_effort=low
+        #   /opt/benchflow/bin/codex-acp ${OPENAI_BASE_URL:+-c openai_base_url=...} -c sandbox_mode=workspace-write -c model_reasoning_effort=low
         # and produces clean argv tokens.
         self._agent_launch = _apply_reasoning_effort(
             self._agent_launch, cfg.primary_agent, cfg.reasoning_effort

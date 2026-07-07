@@ -11,6 +11,7 @@ from benchflow.rollout import (
     RolloutConfig,
     Scene,
     _agent_launch_with_web_policy,
+    _apply_reasoning_effort,
     _apply_web_policy,
     _skill_nudge,
     _task_disallows_internet,
@@ -164,12 +165,21 @@ async def test_connect_as_applies_web_policy_to_role_env(tmp_path):
 def test_codex_launch_disable_is_gated_by_web_policy():
     base_cmd = (
         "/opt/benchflow/bin/codex-acp "
-        "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+        "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL} "
+        "-c sandbox_mode=workspace-write"
     )
     assert _agent_launch_with_web_policy("codex-acp", disallow=False) == base_cmd
     assert _agent_launch_with_web_policy("codex-acp", disallow=True) == (
         f"{base_cmd} -c tools.web_search=false"
     )
+
+
+def test_codex_launch_keeps_workspace_write_with_web_and_reasoning_flags():
+    launch = _agent_launch_with_web_policy("codex-acp", disallow=True)
+    launch = _apply_reasoning_effort(launch, "codex-acp", "xhigh")
+
+    assert "sandbox_mode=workspace-write" in launch
+    assert launch.endswith("-c tools.web_search=false -c model_reasoning_effort=xhigh")
 
 
 def test_agent_registry_has_supported_hard_web_disable_snippets():
