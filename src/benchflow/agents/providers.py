@@ -48,6 +48,15 @@ Common optional fields
 - ``credential_files`` List of dicts with ``"path"`` and ``"env_source"``
                        (and optional ``"post_env"``) — used by ADC providers
                        to write the credential blob into the container.
+- ``agent_auth_env_overrides`` Optional ``{agent_name: ENV_VAR}`` override for
+                       the agent-native env var that should receive
+                       ``BENCHFLOW_PROVIDER_API_KEY``. Use this when one
+                       Anthropic-compatible provider expects ``x-api-key`` and
+                       another expects ``Authorization: Bearer`` for the same
+                       agent.
+- ``agent_env_overrides`` Optional ``{agent_name: {ENV_VAR: value}}`` values
+                       that must be forced for a provider-agent pair after
+                       generic env mapping.
 
 Look at the existing entries below for worked examples:
 ``zai`` (multi-endpoint, models metadata), ``google-vertex`` (ADC,
@@ -76,6 +85,10 @@ class ProviderConfig:
     credential_files: list[dict] = field(default_factory=list)
     # Files to write into container (e.g. GCP ADC).
     # Each dict: {"path": str, "env_source": str, "post_env": {k: v} (optional)}
+    agent_auth_env_overrides: dict[str, str] = field(default_factory=dict)
+    # Provider-specific destination for BENCHFLOW_PROVIDER_API_KEY per agent.
+    agent_env_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Provider-specific fixed env values per agent.
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -176,6 +189,107 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "maxTokens": 131072,
             },
         ],
+    ),
+    "minimax": ProviderConfig(
+        name="minimax",
+        base_url="https://api.minimaxi.com/anthropic",
+        api_protocol="anthropic-messages",
+        auth_type="api_key",
+        auth_env="MINIMAX_API_KEY",
+        agent_auth_env_overrides={
+            "claude-agent-acp": "ANTHROPIC_API_KEY",
+        },
+        models=[
+            {
+                "id": "MiniMax-M3",
+                "name": "MiniMax-M3",
+                "reasoning": True,
+                "input": ["text", "image", "video"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 1000000,
+                "maxTokens": 1000000,
+            },
+            {
+                "id": "MiniMax-M2.7",
+                "name": "MiniMax-M2.7",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2.7-highspeed",
+                "name": "MiniMax-M2.7 Highspeed",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2.5",
+                "name": "MiniMax-M2.5",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2.5-highspeed",
+                "name": "MiniMax-M2.5 Highspeed",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2.1",
+                "name": "MiniMax-M2.1",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2.1-highspeed",
+                "name": "MiniMax-M2.1 Highspeed",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+            {
+                "id": "MiniMax-M2",
+                "name": "MiniMax-M2",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 204800,
+                "maxTokens": 204800,
+            },
+        ],
+    ),
+    "openrouter": ProviderConfig(
+        name="openrouter",
+        base_url="https://openrouter.ai/api",
+        api_protocol="anthropic-messages",
+        auth_type="api_key",
+        auth_env="OPENROUTER_API_KEY",
+        endpoints={
+            "anthropic-messages": "https://openrouter.ai/api",
+            "openai-completions": "https://openrouter.ai/api/v1",
+            "openai-responses": "https://openrouter.ai/api/v1",
+        },
+        agent_env_overrides={
+            # OpenRouter's Claude Code integration requires this to be present
+            # and empty, otherwise Claude Code may prefer Anthropic auth.
+            "claude-agent-acp": {"ANTHROPIC_API_KEY": ""},
+        },
     ),
 }
 

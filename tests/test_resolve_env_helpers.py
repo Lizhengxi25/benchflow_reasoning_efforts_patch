@@ -31,6 +31,8 @@ class TestAutoInheritEnv:
             pytest.param("OPENAI_API_KEY", "sk-oai", id="openai"),
             pytest.param("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token", id="bedrock"),
             pytest.param("AWS_REGION", "us-east-1", id="bedrock-region"),
+            pytest.param("MINIMAX_API_KEY", "mk-host", id="minimax-provider"),
+            pytest.param("OPENROUTER_API_KEY", "or-host", id="openrouter-provider"),
             pytest.param("ZAI_API_KEY", "zk-host", id="provider"),
         ],
     )
@@ -166,6 +168,62 @@ class TestResolveProviderEnv:
         assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
         # env_mapping translates to ANTHROPIC_BASE_URL
         assert env["ANTHROPIC_BASE_URL"] == "https://api.z.ai/api/anthropic"
+
+    def test_minimax_maps_api_key_to_anthropic_api_key_for_claude_agent(self):
+        """MiniMax Anthropic-compatible API expects x-api-key, not bearer auth."""
+        env = {"MINIMAX_API_KEY": "mk-test"}
+        resolve_provider_env(env, "minimax/MiniMax-M3", "claude-agent-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "minimax"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "MiniMax-M3"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.minimaxi.com/anthropic"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "mk-test"
+        assert env["ANTHROPIC_BASE_URL"] == "https://api.minimaxi.com/anthropic"
+        assert env["ANTHROPIC_API_KEY"] == "mk-test"
+        assert env["ANTHROPIC_MODEL"] == "MiniMax-M3"
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_minimax_full_resolve_overrides_inherited_anthropic_api_key(self, monkeypatch):
+        """Host Anthropic keys must not leak into a MiniMax-prefixed model run."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+        monkeypatch.setenv("MINIMAX_API_KEY", "mk-test")
+        result = resolve_agent_env("claude-agent-acp", "minimax/MiniMax-M3", {})
+        assert result["ANTHROPIC_API_KEY"] == "mk-test"
+        assert result["MINIMAX_API_KEY"] == "mk-test"
+        assert result["ANTHROPIC_BASE_URL"] == "https://api.minimaxi.com/anthropic"
+        assert result["ANTHROPIC_MODEL"] == "MiniMax-M3"
+        assert "ANTHROPIC_AUTH_TOKEN" not in result
+
+    def test_openrouter_maps_to_claude_code_anthropic_skin(self):
+        env = {"OPENROUTER_API_KEY": "or-test", "ANTHROPIC_API_KEY": "sk-anthropic"}
+        resolve_provider_env(
+            env,
+            "openrouter/~anthropic/claude-sonnet-latest",
+            "claude-agent-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openrouter"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "~anthropic/claude-sonnet-latest"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://openrouter.ai/api"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "or-test"
+        assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "or-test"
+        assert env["ANTHROPIC_API_KEY"] == ""
+        assert env["ANTHROPIC_MODEL"] == "~anthropic/claude-sonnet-latest"
+
+    def test_openrouter_full_resolve_clears_inherited_anthropic_api_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+        result = resolve_agent_env(
+            "claude-agent-acp",
+            "openrouter/~anthropic/claude-sonnet-latest",
+            {},
+        )
+        assert result["OPENROUTER_API_KEY"] == "or-test"
+        assert result["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+        assert result["ANTHROPIC_AUTH_TOKEN"] == "or-test"
+        assert result["ANTHROPIC_API_KEY"] == ""
+        assert result["ANTHROPIC_MODEL"] == "~anthropic/claude-sonnet-latest"
 
     def test_zai_picks_openai_endpoint_for_codex_agent(self):
         """codex-acp speaks openai-responses → routes to zai's OpenAI endpoint."""

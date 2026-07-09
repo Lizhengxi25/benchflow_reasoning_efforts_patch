@@ -293,6 +293,8 @@ def test_provider_models_and_credentials(name, cfg):
         ("google-vertex/gemini-2.5-pro", "google-vertex"),
         ("anthropic-vertex/claude-sonnet-4-6", "anthropic-vertex"),
         ("aws-bedrock/openai.gpt-oss-20b-1:0", "aws-bedrock"),
+        ("minimax/MiniMax-M3", "minimax"),
+        ("openrouter/~anthropic/claude-sonnet-latest", "openrouter"),
         ("zai/glm-5", "zai"),
         ("vllm/local-model", "vllm"),
     ],

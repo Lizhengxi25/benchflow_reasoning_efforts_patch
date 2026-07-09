@@ -132,6 +132,18 @@ def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
         )
 
 
+def _mapped_agent_env_var(provider_cfg, agent: str, src: str, dst: str) -> str:
+    if src != "BENCHFLOW_PROVIDER_API_KEY" or provider_cfg is None:
+        return dst
+    return provider_cfg.agent_auth_env_overrides.get(agent, dst)
+
+
+def _apply_provider_agent_env_overrides(agent_env: dict[str, str], provider_cfg, agent: str) -> None:
+    if provider_cfg is None:
+        return
+    agent_env.update(provider_cfg.agent_env_overrides.get(agent, {}))
+
+
 def resolve_provider_env(
     agent_env: dict[str, str],
     model: str,
@@ -150,6 +162,7 @@ def resolve_provider_env(
     # multi-endpoint providers (e.g. zai) route to the right URL.
     agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
     _prov = find_provider(model)
+    _prov_cfg = None
     if _prov:
         _prov_name, _prov_cfg = _prov
         agent_env.setdefault("BENCHFLOW_PROVIDER_NAME", _prov_name)
@@ -189,7 +202,9 @@ def resolve_provider_env(
     if agent_cfg and agent_cfg.env_mapping:
         for src, dst in agent_cfg.env_mapping.items():
             if src in agent_env:
+                dst = _mapped_agent_env_var(_prov_cfg, agent, src, dst)
                 agent_env.setdefault(dst, agent_env[src])
+    _apply_provider_agent_env_overrides(agent_env, _prov_cfg, agent)
     if agent == "openhands":
         agent_env.setdefault("LLM_MODEL", _normalize_openhands_model(model))
 
@@ -257,17 +272,21 @@ def resolve_agent_env(
         from benchflow.agents.providers import find_provider
 
         provider = find_provider(model)
+        provider_cfg = provider[1] if provider is not None else None
         if provider is not None:
-            _, provider_cfg = provider
             if provider_cfg.auth_type == "aws":
                 validate_aws_bedrock_env(agent_env, model)
         if agent_cfg and agent_cfg.env_mapping:
             for src, dst in agent_cfg.env_mapping.items():
-                if src in agent_env and dst not in explicit_agent_env_keys:
+                if src not in agent_env:
+                    continue
+                dst = _mapped_agent_env_var(provider_cfg, agent, src, dst)
+                if dst not in explicit_agent_env_keys:
                     # Provider resolution must override unrelated fallback
                     # vars auto-inherited from the source env, but preserve
                     # explicit agent_env overrides supplied by the caller.
                     agent_env[dst] = agent_env[src]
+        _apply_provider_agent_env_overrides(agent_env, provider_cfg, agent)
         # Validate required API key for the chosen model
         from benchflow.agents.registry import infer_env_key_for_model
 
@@ -277,6 +296,10 @@ def resolve_agent_env(
             if agent_cfg
             else None
         )
+        if provider_cfg and mapped_provider_key:
+            mapped_provider_key = provider_cfg.agent_auth_env_overrides.get(
+                agent, mapped_provider_key
+            )
         has_agent_native_bridge_key = bool(
             mapped_provider_key
             and pre_provider_env.get(mapped_provider_key)

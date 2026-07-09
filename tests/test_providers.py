@@ -26,6 +26,16 @@ class TestFindProvider:
         assert name == "zai"
         assert cfg.auth_env == "ZAI_API_KEY"
 
+    def test_minimax_prefix(self):
+        name, cfg = find_provider("minimax/MiniMax-M3")
+        assert name == "minimax"
+        assert cfg.auth_env == "MINIMAX_API_KEY"
+
+    def test_openrouter_prefix(self):
+        name, cfg = find_provider("openrouter/~anthropic/claude-sonnet-latest")
+        assert name == "openrouter"
+        assert cfg.auth_env == "OPENROUTER_API_KEY"
+
     def test_case_insensitive(self):
         name, _ = find_provider("ZAI/glm-5")
         assert name == "zai"
@@ -111,6 +121,24 @@ class TestResolveBaseUrl:
             == "https://api.z.ai/api/paas/v4"
         )
 
+    def test_minimax_anthropic_endpoint(self):
+        p = PROVIDERS["minimax"]
+        assert (
+            resolve_base_url(p, {}, protocol="anthropic-messages")
+            == "https://api.minimaxi.com/anthropic"
+        )
+
+    def test_openrouter_endpoints(self):
+        p = PROVIDERS["openrouter"]
+        assert (
+            resolve_base_url(p, {}, protocol="anthropic-messages")
+            == "https://openrouter.ai/api"
+        )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-completions")
+            == "https://openrouter.ai/api/v1"
+        )
+
 
 # ── resolve_auth_env: which env var does this provider need? ──
 
@@ -120,6 +148,15 @@ class TestResolveAuthEnv:
 
     def test_zai_model(self):
         assert resolve_auth_env("zai/glm-5") == "ZAI_API_KEY"
+
+    def test_minimax_model(self):
+        assert resolve_auth_env("minimax/MiniMax-M3") == "MINIMAX_API_KEY"
+
+    def test_openrouter_model(self):
+        assert (
+            resolve_auth_env("openrouter/~anthropic/claude-sonnet-latest")
+            == "OPENROUTER_API_KEY"
+        )
 
     def test_unknown_model_returns_none(self):
         """Models without a custom provider fall through to None."""
@@ -140,6 +177,19 @@ class TestRegistryIntegration:
         from benchflow.agents.registry import infer_env_key_for_model
 
         assert infer_env_key_for_model("zai/glm-5") == "ZAI_API_KEY"
+
+    def test_infer_env_key_for_minimax(self):
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        assert infer_env_key_for_model("minimax/MiniMax-M3") == "MINIMAX_API_KEY"
+
+    def test_infer_env_key_for_openrouter(self):
+        from benchflow.agents.registry import infer_env_key_for_model
+
+        assert (
+            infer_env_key_for_model("openrouter/~anthropic/claude-sonnet-latest")
+            == "OPENROUTER_API_KEY"
+        )
 
     def test_infer_env_key_for_aws_bedrock_is_none(self):
         from benchflow.agents.registry import infer_env_key_for_model
@@ -171,6 +221,15 @@ class TestProviderModels:
 class TestStripProviderPrefix:
     def test_known_provider(self):
         assert strip_provider_prefix("zai/glm-5") == "glm-5"
+
+    def test_minimax_provider(self):
+        assert strip_provider_prefix("minimax/MiniMax-M3") == "MiniMax-M3"
+
+    def test_openrouter_provider(self):
+        assert (
+            strip_provider_prefix("openrouter/~anthropic/claude-sonnet-latest")
+            == "~anthropic/claude-sonnet-latest"
+        )
 
     def test_vertex_provider(self):
         assert (
@@ -227,6 +286,8 @@ class TestShimProviderFallback:
         """find_provider works with full prefixed names — the pre-strip path."""
         assert find_provider("anthropic-vertex/claude-sonnet-4-6") is not None
         assert find_provider("google-vertex/gemini-3-flash-preview") is not None
+        assert find_provider("minimax/MiniMax-M3") is not None
+        assert find_provider("openrouter/~anthropic/claude-sonnet-latest") is not None
         assert find_provider("zai/glm-5") is not None
         assert find_provider("zai/glm-5.1") is not None
 

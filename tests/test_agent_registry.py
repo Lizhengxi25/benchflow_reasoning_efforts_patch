@@ -103,3 +103,11 @@ class TestProviderCredentialFiles:
     def test_zai_no_credential_files(self):
         cfg = PROVIDERS["zai"]
         assert cfg.credential_files == []
+
+    def test_minimax_no_credential_files(self):
+        cfg = PROVIDERS["minimax"]
+        assert cfg.credential_files == []
+
+    def test_openrouter_no_credential_files(self):
+        cfg = PROVIDERS["openrouter"]
+        assert cfg.credential_files == []
