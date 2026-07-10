@@ -282,6 +282,20 @@ def test_provider_models_and_credentials(name, cfg):
     for cf in cfg.credential_files:
         assert cf.get("path"), f"credential_files entry missing path: {cf}"
         assert cf.get("env_source"), f"credential_files entry missing env_source: {cf}"
+    for agent, files in cfg.agent_files.items():
+        assert agent in AGENTS, f"agent_files references unknown agent {agent!r}"
+        for agent_file in files:
+            assert agent_file.get("path"), (
+                f"agent_files entry missing path: {agent_file}"
+            )
+            assert agent_file.get("content"), (
+                f"agent_files entry missing content: {agent_file}"
+            )
+    for agent, suffix in cfg.agent_launch_suffixes.items():
+        assert agent in AGENTS, (
+            f"agent_launch_suffixes references unknown agent {agent!r}"
+        )
+        assert suffix, f"empty launch suffix for {agent!r}"
 
 
 # ── Cross-cutting derived contracts ─────────────────────────────────────────

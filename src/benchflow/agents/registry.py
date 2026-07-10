@@ -282,6 +282,7 @@ class AgentConfig:
 # BenchFlow boundary so a typo fails fast instead of silently degrading
 # to the agent's built-in default mid-rollout.
 REASONING_EFFORT_VALUES: tuple[str, ...] = (
+    "none",
     "minimal",
     "low",
     "medium",

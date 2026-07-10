@@ -127,6 +127,10 @@ class TestResolveBaseUrl:
             resolve_base_url(p, {}, protocol="anthropic-messages")
             == "https://api.minimaxi.com/anthropic"
         )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-responses")
+            == "https://api.minimaxi.com/v1"
+        )
 
     def test_openrouter_endpoints(self):
         p = PROVIDERS["openrouter"]
@@ -136,6 +140,10 @@ class TestResolveBaseUrl:
         )
         assert (
             resolve_base_url(p, {}, protocol="openai-completions")
+            == "https://openrouter.ai/api/v1"
+        )
+        assert (
+            resolve_base_url(p, {}, protocol="openai-responses")
             == "https://openrouter.ai/api/v1"
         )
 

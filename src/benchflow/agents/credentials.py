@@ -73,13 +73,9 @@ async def write_credential_files(
 ) -> None:
     """Write credential files into container from agent + provider configs.
 
-    Two schemas live side by side intentionally — do not unify until a 3rd
-    pattern appears. Today: 1 agent (codex `template`-wraps a raw key) + 2
-    providers (vertex `post_env`-points GOOGLE_APPLICATION_CREDENTIALS at the
-    written file). Same op shape, different intent (compile-time value
-    transform vs. runtime env side effect). Provider list is `list[dict]`,
-    agent list is `list[CredentialFile]` dataclass — keep dict access vs.
-    attribute access straight when editing the loops below.
+    Provider credential files consume secrets from env; provider agent_files
+    are static runtime configuration (for example a Codex model catalog).
+    Agent credential files remain the final layer.
     """
     # Provider credential files (e.g. GCP ADC for Vertex)
     owner = _owner_from_home(cred_home)
@@ -97,6 +93,15 @@ async def write_credential_files(
                     for k, v in cf.get("post_env", {}).items():
                         agent_env.setdefault(k, v.format(home=cred_home))
                     logger.info("Provider credential file written: %s", path)
+            for agent_file in _prov_cfg.agent_files.get(agent, []):
+                path = agent_file["path"].format(home=cred_home)
+                await upload_credential(
+                    env,
+                    path,
+                    agent_file["content"],
+                    owner=owner,
+                )
+                logger.info("Provider agent config written: %s", path)
 
     # Gemini CLI needs settings.json to use Vertex AI backend
     await write_gemini_vertex_settings(env, agent, model, cred_home)

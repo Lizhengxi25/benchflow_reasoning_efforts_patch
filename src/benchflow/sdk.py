@@ -179,7 +179,7 @@ class SDK:
 
         ``reasoning_effort``: per-run override for agents whose AgentConfig
         sets ``reasoning_effort_flag`` (currently only ``codex-acp``).
-        Accepted values: minimal/low/medium/high/xhigh.  Validated in
+        Accepted values: none/minimal/low/medium/high/xhigh.  Validated in
         ``RolloutConfig.__post_init__``; passing the kwarg to an agent that
         does not support it raises during ``Rollout.setup``.
         """

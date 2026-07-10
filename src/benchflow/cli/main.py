@@ -229,7 +229,7 @@ def run(
         typer.Option(
             "--reasoning-effort",
             help=(
-                "Agent reasoning effort: minimal|low|medium|high|xhigh. "
+                "Agent reasoning effort: none|minimal|low|medium|high|xhigh. "
                 "Only honored by agents whose AgentConfig declares "
                 "reasoning_effort_flag (currently: codex-acp). Passing "
                 "this flag to an unsupported agent fails fast at rollout "

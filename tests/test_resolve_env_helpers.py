@@ -86,6 +86,15 @@ class TestAutoInheritEnv:
         auto_inherit_env(env)
         assert env["OPENAI_BASE_URL"] == "https://custom.openai.example/v1"
 
+    def test_inherits_explicit_provider_base_url(self, monkeypatch):
+        monkeypatch.setenv(
+            "BENCHFLOW_PROVIDER_BASE_URL",
+            "https://api.minimax.io/v1",
+        )
+        env: dict[str, str] = {}
+        auto_inherit_env(env)
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.minimax.io/v1"
+
 
 # ── inject_vertex_credentials ──
 
@@ -194,6 +203,22 @@ class TestResolveProviderEnv:
         assert result["ANTHROPIC_MODEL"] == "MiniMax-M3"
         assert "ANTHROPIC_AUTH_TOKEN" not in result
 
+    def test_minimax_maps_to_official_responses_endpoint_for_codex(self):
+        env = {
+            "MINIMAX_API_KEY": "mk-test",
+            "OPENAI_API_KEY": "sk-openai",
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        }
+        resolve_provider_env(env, "minimax/MiniMax-M3", "codex-acp")
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "minimax"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "MiniMax-M3"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.minimaxi.com/v1"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "mk-test"
+        assert env["MINIMAX_API_KEY"] == "mk-test"
+        assert env["OPENAI_API_KEY"] == ""
+        assert env["OPENAI_BASE_URL"] == ""
+
     def test_openrouter_maps_to_claude_code_anthropic_skin(self):
         env = {"OPENROUTER_API_KEY": "or-test", "ANTHROPIC_API_KEY": "sk-anthropic"}
         resolve_provider_env(
@@ -224,6 +249,26 @@ class TestResolveProviderEnv:
         assert result["ANTHROPIC_AUTH_TOKEN"] == "or-test"
         assert result["ANTHROPIC_API_KEY"] == ""
         assert result["ANTHROPIC_MODEL"] == "~anthropic/claude-sonnet-latest"
+
+    def test_openrouter_maps_to_responses_endpoint_for_codex(self):
+        env = {
+            "OPENROUTER_API_KEY": "or-test",
+            "OPENAI_API_KEY": "sk-openai",
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        }
+        resolve_provider_env(
+            env,
+            "openrouter/minimax/minimax-m3",
+            "codex-acp",
+        )
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "openrouter"
+        assert env["BENCHFLOW_PROVIDER_MODEL"] == "minimax/minimax-m3"
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "or-test"
+        assert env["OPENROUTER_API_KEY"] == "or-test"
+        assert env["OPENAI_API_KEY"] == ""
+        assert env["OPENAI_BASE_URL"] == ""
 
     def test_zai_picks_openai_endpoint_for_codex_agent(self):
         """codex-acp speaks openai-responses → routes to zai's OpenAI endpoint."""

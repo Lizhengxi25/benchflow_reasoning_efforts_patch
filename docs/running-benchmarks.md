@@ -237,6 +237,31 @@ Common choices:
 | OpenHands | `openhands` (alias: `oh`) | `LLM_API_KEY` |
 | Harvey LAB harness | `harvey-lab-harness` (alias: `harvey-lab`) | Provider key matching model |
 
+Codex can use MiniMax-M3 without an OpenAI key by selecting a provider-prefixed
+model:
+
+```bash
+# MiniMax official Responses API (China endpoint).
+MINIMAX_API_KEY=... bench eval create \
+  --tasks-dir tasks/edit-pdf \
+  --agent codex-acp \
+  --model minimax/MiniMax-M3 \
+  --reasoning-effort high \
+  --sandbox docker
+
+# MiniMax-M3 through OpenRouter.
+OPENROUTER_API_KEY=... bench eval create \
+  --tasks-dir tasks/edit-pdf \
+  --agent codex-acp \
+  --model openrouter/minimax/minimax-m3 \
+  --reasoning-effort high \
+  --sandbox docker
+```
+
+The provider routes use OpenAI Responses wire format but authenticate with
+`MINIMAX_API_KEY` or `OPENROUTER_API_KEY`. For an international MiniMax key,
+also set `BENCHFLOW_PROVIDER_BASE_URL=https://api.minimax.io/v1`.
+
 Any agent can also be run via [ACPX](https://acpx.sh/) by prefixing with `acpx/`:
 
 ```bash

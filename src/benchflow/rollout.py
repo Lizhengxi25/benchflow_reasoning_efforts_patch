@@ -127,6 +127,40 @@ def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
     return launch
 
 
+def _apply_provider_agent_launch(
+    launch: str,
+    *,
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    sandbox_user: str | None,
+) -> str:
+    """Append provider-specific launch configuration for an agent/model pair."""
+    if not model:
+        return launch
+    from benchflow.agents.providers import find_provider, strip_provider_prefix
+
+    provider = find_provider(model)
+    if provider is None:
+        return launch
+    _provider_name, provider_cfg = provider
+    suffix_template = provider_cfg.agent_launch_suffixes.get(agent)
+    if not suffix_template:
+        return launch
+    base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL", "")
+    if not base_url:
+        raise ValueError(
+            f"Provider {_provider_name!r} requires a resolved base URL for {agent!r}"
+        )
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    suffix = suffix_template.format(
+        base_url=shlex.quote(base_url),
+        home=shlex.quote(home),
+        model=shlex.quote(strip_provider_prefix(model)),
+    )
+    return f"{launch} {suffix}"
+
+
 def _apply_reasoning_effort(launch: str, agent: str, effort: str | None) -> str:
     """Append the agent's reasoning-effort flag to a launch command.
 
@@ -767,7 +801,7 @@ class RolloutConfig:
     include_task_skills: bool = True
     skip_verify: bool = False
     export_generated_skills_to: str | Path | None = None
-    # Per-run agent reasoning-effort knob (minimal/low/medium/high/xhigh).
+    # Per-run agent reasoning-effort knob (none/minimal/low/medium/high/xhigh).
     # Only meaningful for agents whose AgentConfig sets
     # ``reasoning_effort_flag``; otherwise ``Rollout.setup`` raises.  Lives
     # at the RolloutConfig level (not on Scene) because every rollout the
@@ -1010,6 +1044,13 @@ class Rollout:
         self._agent_launch = _agent_launch_with_web_policy(
             cfg.primary_agent,
             disallow=self._disallow_web_tools,
+        )
+        self._agent_launch = _apply_provider_agent_launch(
+            self._agent_launch,
+            agent=cfg.primary_agent,
+            model=cfg.primary_model,
+            agent_env=self._agent_env,
+            sandbox_user=cfg.sandbox_user,
         )
         # Append the per-run reasoning-effort flag (if any) AFTER the no-web
         # suffix so the bash word-splitting order stays predictable; the
@@ -1931,6 +1972,13 @@ class Rollout:
                 {**(cfg.agent_env or {}), **(role.env or {})},
             ),
             disallow=disallow_web_tools,
+        )
+        agent_launch = _apply_provider_agent_launch(
+            agent_launch,
+            agent=role.agent,
+            model=role.model,
+            agent_env=agent_env,
+            sandbox_user=cfg.sandbox_user,
         )
         agent_env, self._provider_runtime = await ensure_bedrock_proxy_runtime(
             agent=role.agent,

@@ -81,6 +81,7 @@ def auto_inherit_env(
         "GOOGLE_CLOUD_LOCATION",
         "LLM_API_KEY",
         "LLM_BASE_URL",
+        "BENCHFLOW_PROVIDER_BASE_URL",
     }
     for cfg in PROVIDERS.values():
         if cfg.auth_env:

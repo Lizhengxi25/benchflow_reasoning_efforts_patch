@@ -57,6 +57,11 @@ Common optional fields
 - ``agent_env_overrides`` Optional ``{agent_name: {ENV_VAR: value}}`` values
                        that must be forced for a provider-agent pair after
                        generic env mapping.
+- ``agent_launch_suffixes`` Optional ``{agent_name: shell_args}`` appended to
+                       an agent launch command for provider-native runtime
+                       configuration (for example Codex custom providers).
+- ``agent_files``       Optional ``{agent_name: [{path, content}]}`` static
+                       config files written into the agent home before launch.
 
 Look at the existing entries below for worked examples:
 ``zai`` (multi-endpoint, models metadata), ``google-vertex`` (ADC,
@@ -64,6 +69,56 @@ credential_files, url_params), ``vllm`` (user-supplied base_url).
 """
 
 from dataclasses import dataclass, field
+
+_MINIMAX_M3_CODEX_CATALOG = """{
+  "models": [
+    {
+      "slug": "MiniMax-M3",
+      "display_name": "MiniMax-M3",
+      "description": "MiniMax",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "Think-Off"},
+        {"effort": "high", "description": "Adaptive Thinking"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "minimax/minimax-m3",
+      "display_name": "MiniMax-M3 (OpenRouter)",
+      "description": "MiniMax via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "Think-Off"},
+        {"effort": "high", "description": "Adaptive Thinking"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    }
+  ]
+}
+"""
 
 
 @dataclass
@@ -89,6 +144,10 @@ class ProviderConfig:
     # Provider-specific destination for BENCHFLOW_PROVIDER_API_KEY per agent.
     agent_env_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     # Provider-specific fixed env values per agent.
+    agent_launch_suffixes: dict[str, str] = field(default_factory=dict)
+    # Provider-specific launch arguments. Supports {base_url}, {home}, and {model}.
+    agent_files: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    # Static files written before launch. Paths support the {home} placeholder.
 
     @property
     def all_endpoints(self) -> dict[str, str]:
@@ -196,8 +255,39 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="anthropic-messages",
         auth_type="api_key",
         auth_env="MINIMAX_API_KEY",
+        endpoints={
+            "anthropic-messages": "https://api.minimaxi.com/anthropic",
+            "openai-completions": "https://api.minimaxi.com/v1",
+            "openai-responses": "https://api.minimaxi.com/v1",
+        },
         agent_auth_env_overrides={
             "claude-agent-acp": "ANTHROPIC_API_KEY",
+            "codex-acp": "MINIMAX_API_KEY",
+        },
+        agent_env_overrides={
+            # Codex uses the custom provider below. Empty OpenAI vars prevent
+            # inherited OpenAI credentials/base URLs from selecting the native
+            # provider or producing a conflicting ~/.codex/auth.json.
+            "codex-acp": {"OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""},
+        },
+        agent_launch_suffixes={
+            "codex-acp": (
+                "-c model_provider=minimax "
+                "-c model_providers.minimax.name=MiniMax "
+                "-c model_providers.minimax.base_url={base_url} "
+                "-c model_providers.minimax.env_key=MINIMAX_API_KEY "
+                "-c model_providers.minimax.wire_api=responses "
+                "-c model_context_window=1000000 "
+                "-c model_catalog_json={home}/.codex/model-catalogs/minimax-m3.json"
+            ),
+        },
+        agent_files={
+            "codex-acp": [
+                {
+                    "path": "{home}/.codex/model-catalogs/minimax-m3.json",
+                    "content": _MINIMAX_M3_CODEX_CATALOG,
+                }
+            ],
         },
         models=[
             {
@@ -289,6 +379,31 @@ PROVIDERS: dict[str, ProviderConfig] = {
             # OpenRouter's Claude Code integration requires this to be present
             # and empty, otherwise Claude Code may prefer Anthropic auth.
             "claude-agent-acp": {"ANTHROPIC_API_KEY": ""},
+            # Codex is configured as a named custom provider below. Do not let
+            # inherited OpenAI settings override that route.
+            "codex-acp": {"OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""},
+        },
+        agent_auth_env_overrides={
+            "codex-acp": "OPENROUTER_API_KEY",
+        },
+        agent_launch_suffixes={
+            "codex-acp": (
+                "-c model_provider=openrouter "
+                "-c model_providers.openrouter.name=OpenRouter "
+                "-c model_providers.openrouter.base_url={base_url} "
+                "-c model_providers.openrouter.env_key=OPENROUTER_API_KEY "
+                "-c model_providers.openrouter.wire_api=responses "
+                "-c model_context_window=1000000 "
+                "-c model_catalog_json={home}/.codex/model-catalogs/minimax-m3.json"
+            ),
+        },
+        agent_files={
+            "codex-acp": [
+                {
+                    "path": "{home}/.codex/model-catalogs/minimax-m3.json",
+                    "content": _MINIMAX_M3_CODEX_CATALOG,
+                }
+            ],
         },
     ),
 }
