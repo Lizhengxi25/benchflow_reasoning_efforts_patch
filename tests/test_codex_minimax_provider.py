@@ -59,6 +59,33 @@ def test_codex_launch_uses_named_responses_provider(
     assert "-c model_catalog_json=/root/.codex/model-catalogs/minimax-m3.json" in launch
 
 
+@pytest.mark.parametrize(
+    ("model", "agent", "expected_count"),
+    [
+        ("openrouter/minimax/minimax-m3", "codex-acp", 1),
+        ("minimax/MiniMax-M3", "codex-acp", 0),
+        ("openrouter/openai/gpt-5", "codex-acp", 0),
+        ("openrouter/minimax/MiniMax-M3", "codex-acp", 0),
+        ("openrouter/minimax/minimax-m3", "claude-agent-acp", 0),
+    ],
+)
+def test_multi_agent_disable_is_exactly_scoped_to_openrouter_minimax_m3(
+    model,
+    agent,
+    expected_count,
+):
+    """Guards the M3 namespace workaround added after commit a48bf34."""
+    launch = _apply_provider_agent_launch(
+        agent,
+        agent=agent,
+        model=model,
+        agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "https://example.invalid/v1"},
+        sandbox_user=None,
+    )
+
+    assert launch.count("-c features.multi_agent=false") == expected_count
+
+
 @pytest.mark.asyncio
 async def test_minimax_codex_catalog_is_written_to_agent_home():
     uploaded: dict[str, str] = {}

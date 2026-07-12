@@ -296,6 +296,18 @@ def test_provider_models_and_credentials(name, cfg):
             f"agent_launch_suffixes references unknown agent {agent!r}"
         )
         assert suffix, f"empty launch suffix for {agent!r}"
+    for agent, model_suffixes in cfg.agent_model_launch_suffixes.items():
+        assert agent in AGENTS, (
+            f"agent_model_launch_suffixes references unknown agent {agent!r}"
+        )
+        assert model_suffixes, f"empty model launch suffix map for {agent!r}"
+        for model, suffix in model_suffixes.items():
+            assert model, f"empty model ID in launch suffix map for {agent!r}"
+            provider = find_provider(model)
+            assert provider is not None and provider[0] == name, (
+                f"model launch suffix {model!r} does not resolve to provider {name!r}"
+            )
+            assert suffix, f"empty launch suffix for {agent!r}/{model!r}"
 
 
 # ── Cross-cutting derived contracts ─────────────────────────────────────────

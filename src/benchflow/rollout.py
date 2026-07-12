@@ -144,8 +144,14 @@ def _apply_provider_agent_launch(
     if provider is None:
         return launch
     _provider_name, provider_cfg = provider
-    suffix_template = provider_cfg.agent_launch_suffixes.get(agent)
-    if not suffix_template:
+    suffix_templates = []
+    if suffix_template := provider_cfg.agent_launch_suffixes.get(agent):
+        suffix_templates.append(suffix_template)
+    if model_suffix_template := provider_cfg.agent_model_launch_suffixes.get(
+        agent, {}
+    ).get(model):
+        suffix_templates.append(model_suffix_template)
+    if not suffix_templates:
         return launch
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL", "")
     if not base_url:
@@ -153,12 +159,13 @@ def _apply_provider_agent_launch(
             f"Provider {_provider_name!r} requires a resolved base URL for {agent!r}"
         )
     home = f"/home/{sandbox_user}" if sandbox_user else "/root"
-    suffix = suffix_template.format(
-        base_url=shlex.quote(base_url),
-        home=shlex.quote(home),
-        model=shlex.quote(strip_provider_prefix(model)),
-    )
-    return f"{launch} {suffix}"
+    template_values = {
+        "base_url": shlex.quote(base_url),
+        "home": shlex.quote(home),
+        "model": shlex.quote(strip_provider_prefix(model)),
+    }
+    suffixes = [template.format(**template_values) for template in suffix_templates]
+    return " ".join([launch, *suffixes])
 
 
 def _apply_reasoning_effort(launch: str, agent: str, effort: str | None) -> str:

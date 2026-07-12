@@ -60,6 +60,10 @@ Common optional fields
 - ``agent_launch_suffixes`` Optional ``{agent_name: shell_args}`` appended to
                        an agent launch command for provider-native runtime
                        configuration (for example Codex custom providers).
+- ``agent_model_launch_suffixes`` Optional
+                       ``{agent_name: {full_model_id: shell_args}}`` appended
+                       only when both the agent and full, unmodified model ID
+                       match exactly.
 - ``agent_files``       Optional ``{agent_name: [{path, content}]}`` static
                        config files written into the agent home before launch.
 
@@ -146,6 +150,11 @@ class ProviderConfig:
     # Provider-specific fixed env values per agent.
     agent_launch_suffixes: dict[str, str] = field(default_factory=dict)
     # Provider-specific launch arguments. Supports {base_url}, {home}, and {model}.
+    agent_model_launch_suffixes: dict[str, dict[str, str]] = field(
+        default_factory=dict
+    )
+    # Exact-model launch arguments keyed by agent, then full unstripped model ID.
+    # Templates support the same placeholders as agent_launch_suffixes.
     agent_files: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     # Static files written before launch. Paths support the {home} placeholder.
 
@@ -396,6 +405,11 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "-c model_context_window=1000000 "
                 "-c model_catalog_json={home}/.codex/model-catalogs/minimax-m3.json"
             ),
+        },
+        agent_model_launch_suffixes={
+            "codex-acp": {
+                "openrouter/minimax/minimax-m3": "-c features.multi_agent=false",
+            },
         },
         agent_files={
             "codex-acp": [
