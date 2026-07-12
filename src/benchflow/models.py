@@ -69,6 +69,8 @@ class RolloutResult:
         n_tool_calls: Total tool calls observed during the session.
         n_prompts:    Number of user prompts sent to the agent.
         error:        Error description string, or None on success.
+        error_data:   Structured diagnostic data supplied by the failing ACP
+                      agent, or None when unavailable/not an ACP error.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
         partial_trajectory: True when the trajectory was salvaged from a timed-out
@@ -102,6 +104,7 @@ class RolloutResult:
         reward_events: list[RewardEvent] | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        error_data: Any | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -113,6 +116,7 @@ class RolloutResult:
         self.n_tool_calls = n_tool_calls
         self.n_prompts = n_prompts
         self.error = error
+        self.error_data = error_data
         self.verifier_error = verifier_error
         self.partial_trajectory = partial_trajectory
         self.trajectory_source = trajectory_source

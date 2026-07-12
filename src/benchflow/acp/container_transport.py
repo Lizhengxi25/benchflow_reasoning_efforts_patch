@@ -1,9 +1,10 @@
 """ACP transport over a live stdio pipe to a sandbox process."""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 
 from benchflow.sandbox.process import LiveProcess
 
@@ -18,6 +19,8 @@ class ContainerTransport(Transport):
     Uses a LiveProcess (DockerProcess or DaytonaProcess) to maintain a live
     stdin/stdout connection. Non-JSON lines from the agent (debug output,
     errors, warnings) are captured to a log file if agent_log_path is set.
+    The process's separate stderr stream is drained concurrently into a
+    sibling ``*.stderr.*`` file so a verbose agent cannot block on a full pipe.
     """
 
     def __init__(
@@ -33,20 +36,64 @@ class ContainerTransport(Transport):
         self._env = env or {}
         self._cwd = cwd
         self._agent_log_path = agent_log_path
-        self._agent_log_file = None
+        self._agent_log_file: TextIO | None = None
+        self._agent_stderr_log_path = (
+            agent_log_path.with_name(
+                f"{agent_log_path.stem}.stderr{agent_log_path.suffix}"
+            )
+            if agent_log_path
+            else None
+        )
+        self._agent_stderr_log_file: BinaryIO | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the agent process inside the sandbox."""
-        if self._agent_log_path:
-            self._agent_log_path.parent.mkdir(parents=True, exist_ok=True)
-            # File handle outlives this method — closed in stop(). noqa: SIM115
-            self._agent_log_file = open(self._agent_log_path, "w")  # noqa: SIM115
-        await self._cp.start(
-            command=self._command,
-            env=self._env,
-            cwd=self._cwd,
+        try:
+            if self._agent_log_path:
+                self._agent_log_path.parent.mkdir(parents=True, exist_ok=True)
+                # File handles outlive this method and are closed in close().
+                self._agent_log_file = open(  # noqa: SIM115
+                    self._agent_log_path, "w"
+                )
+                assert self._agent_stderr_log_path is not None
+                self._agent_stderr_log_file = open(  # noqa: SIM115
+                    self._agent_stderr_log_path, "wb"
+                )
+            await self._cp.start(
+                command=self._command,
+                env=self._env,
+                cwd=self._cwd,
+            )
+        except BaseException:
+            self._close_log_files()
+            raise
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(), name="benchflow-agent-stderr"
         )
         logger.info(f"ContainerTransport: agent started ({self._command})")
+
+    async def _drain_stderr(self) -> None:
+        """Drain stderr until EOF, persisting every byte when logging is enabled."""
+        try:
+            while chunk := await self._cp.read_stderr():
+                if self._agent_stderr_log_file:
+                    self._agent_stderr_log_file.write(chunk)
+                    self._agent_stderr_log_file.flush()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Failed while draining container agent stderr", exc_info=True
+            )
+
+    def _close_log_files(self) -> None:
+        if self._agent_log_file:
+            self._agent_log_file.close()
+            self._agent_log_file = None
+        if self._agent_stderr_log_file:
+            self._agent_stderr_log_file.close()
+            self._agent_stderr_log_file = None
 
     async def send(self, message: dict[str, Any]) -> None:
         """Send a JSON-RPC message to the agent."""
@@ -70,8 +117,15 @@ class ContainerTransport(Transport):
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
     async def close(self) -> None:
-        """Terminate the agent process."""
-        if self._agent_log_file:
-            self._agent_log_file.close()
-            self._agent_log_file = None
-        await self._cp.close()
+        """Terminate the agent, drain stderr through EOF, then close its logs."""
+        process_closed = False
+        try:
+            await self._cp.close()
+            process_closed = True
+        finally:
+            if self._stderr_task:
+                if not process_closed:
+                    self._stderr_task.cancel()
+                await asyncio.gather(self._stderr_task, return_exceptions=True)
+                self._stderr_task = None
+            self._close_log_files()

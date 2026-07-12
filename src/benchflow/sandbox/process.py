@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 _BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB readline buffer
 _DIAG_TRUNCATE = 2000  # max chars for diagnostic stderr in error messages
+_STDERR_READ_SIZE = 64 * 1024
+_STDERR_TAIL_SIZE = 8 * 1024
 
 
 async def drain_oversized_line(reader: asyncio.StreamReader) -> int:
@@ -45,6 +47,7 @@ class LiveProcess(ABC):
     """Abstract live stdin/stdout connection to a process inside a sandbox."""
 
     _process: asyncio.subprocess.Process | None = None
+    _stderr_tail = b""
 
     @abstractmethod
     async def start(
@@ -68,15 +71,7 @@ class LiveProcess(ABC):
             # Return empty line — caller will retry readline
             return b""
         if not line:
-            stderr_text = ""
-            if self._process and self._process.stderr:
-                try:
-                    stderr_bytes = await asyncio.wait_for(
-                        self._process.stderr.read(8192), timeout=2
-                    )
-                    stderr_text = stderr_bytes.decode(errors="replace").strip()
-                except Exception:
-                    logger.debug("Could not read stderr from closed process")
+            stderr_text = self._stderr_tail.decode(errors="replace").strip()
             rc = self._process.returncode if self._process else None
             # Diagnose: rc=None with closed stdout usually means the *transport*
             # died (SSH/Daytona idle sleep, container killed) while the local
@@ -95,9 +90,22 @@ class LiveProcess(ABC):
                 hint = f"Local subprocess exited with rc={rc} before stdout closed."
             msg = f"Process closed stdout (rc={rc}): {hint}"
             if stderr_text:
-                msg += f"\nstderr: {stderr_text[:_DIAG_TRUNCATE]}"
+                msg += f"\nstderr: {stderr_text[-_DIAG_TRUNCATE:]}"
             raise ConnectionError(msg)
         return line
+
+    async def read_stderr(self) -> bytes:
+        """Read and retain one stderr chunk for concurrent transport capture."""
+        if not self._process or not self._process.stderr:
+            return b""
+        chunk = await self._process.stderr.read(_STDERR_READ_SIZE)
+        if chunk:
+            self._stderr_tail = (self._stderr_tail + chunk)[-_STDERR_TAIL_SIZE:]
+        return chunk
+
+    def _reset_stderr_tail(self) -> None:
+        """Clear diagnostics before starting a new subprocess."""
+        self._stderr_tail = b""
 
     async def writeline(self, data: str) -> None:
         """Write one line to stdin."""
@@ -233,6 +241,7 @@ class DockerProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        self._reset_stderr_tail()
         proc_env = self._host_env()
 
         # Write env vars to a file inside the container, then source it
@@ -320,6 +329,7 @@ class DaytonaProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        self._reset_stderr_tail()
         # Get SSH credentials
         ssh_access = await self._sandbox.create_ssh_access()
         ssh_target = f"{ssh_access.token}@ssh.app.daytona.io"

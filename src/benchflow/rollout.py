@@ -470,6 +470,7 @@ def _build_rollout_result(
     n_tool_calls: int,
     prompts: list[str],
     error: str | None,
+    error_data: Any | None = None,
     verifier_error: str | None,
     trajectory: list[dict],
     partial_trajectory: bool,
@@ -492,6 +493,7 @@ def _build_rollout_result(
         n_tool_calls=n_tool_calls,
         n_prompts=len(prompts),
         error=error,
+        error_data=error_data,
         verifier_error=verifier_error,
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
@@ -518,6 +520,7 @@ def _build_rollout_result(
                 "n_tool_calls": result.n_tool_calls,
                 "n_prompts": result.n_prompts,
                 "error": result.error,
+                "error_data": result.error_data,
                 "verifier_error": result.verifier_error,
                 "partial_trajectory": result.partial_trajectory,
                 "trajectory_source": result.trajectory_source,
@@ -954,6 +957,7 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+        self._error_data: Any | None = None
 
     @classmethod
     async def create(cls, config: RolloutConfig) -> Rollout:
@@ -1559,6 +1563,7 @@ class Rollout:
             logger.error(f"Agent connection lost: {self._error}")
         except ACPError as e:
             self._error = self._classify_acp_error(e)
+            self._error_data = e.data
             logger.error(self._error)
         except Exception as e:
             self._error = str(e)
@@ -2039,7 +2044,7 @@ class Rollout:
     # ── Internal helpers ──
 
     def _classify_acp_error(self, e: ACPError) -> str:
-        if "Invalid API key" in e.message:
+        if "Invalid API key" in e.detail_message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
 
@@ -2068,6 +2073,7 @@ class Rollout:
             n_tool_calls=self._n_tool_calls,
             prompts=self._resolved_prompts,
             error=self._error,
+            error_data=self._error_data,
             verifier_error=self._verifier_error,
             trajectory=self._trajectory,
             partial_trajectory=self._partial_trajectory,
