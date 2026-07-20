@@ -538,6 +538,52 @@ class TestContainerTransportStderrCapture:
         assert transport._agent_log_file is None
         assert transport._agent_stderr_log_file is None
 
+    @pytest.mark.asyncio
+    async def test_close_bounds_stderr_drain_when_descendant_keeps_pipe_open(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A compose-provider descendant must not block transport close forever."""
+        import benchflow.acp.container_transport as transport_module
+
+        class HangingDrainProcess:
+            def __init__(self) -> None:
+                self.drain_started = asyncio.Event()
+                self.drain_cancelled = asyncio.Event()
+
+            async def start(self, command, env=None, cwd=None) -> None:
+                return None
+
+            async def read_stderr(self) -> bytes:
+                self.drain_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.drain_cancelled.set()
+                    raise
+                return b""
+
+            async def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            transport_module, "_STDERR_DRAIN_CLOSE_TIMEOUT_SEC", 0.01
+        )
+        process = HangingDrainProcess()
+        transport = ContainerTransport(
+            container_process=process,
+            command="agent acp",
+            agent_log_path=tmp_path / "agent.log",
+        )
+
+        await transport.start()
+        await asyncio.wait_for(process.drain_started.wait(), timeout=5)
+        await asyncio.wait_for(transport.close(), timeout=1)
+
+        assert process.drain_cancelled.is_set()
+        assert transport._stderr_task is None
+        assert transport._agent_log_file is None
+        assert transport._agent_stderr_log_file is None
+
 
 class TestACPInterleaving:
     """Test that _read_until_response handles interleaved notifications and agent requests."""

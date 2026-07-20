@@ -235,9 +235,18 @@ class DockerSandbox(BaseSandbox):
                 "not found. Please ensure at least one of these files exist."
             )
 
+    # Callers pass timeout_sec=10 for trivial admin execs (mkdir, cat, pkill),
+    # sized for an idle engine. A batch of 40 concurrent rollouts funnels every
+    # compose call through one rootless-podman API service, where a trivial
+    # exec can queue far beyond 10s — so short timeouts are floored here rather
+    # than at each call site. None (unbounded) is preserved.
+    _MIN_COMPOSE_TIMEOUT_SEC = 180
+
     async def _run_docker_compose_command(
         self, command: list[str], check: bool = True, timeout_sec: int | None = None
     ) -> ExecResult:
+        if timeout_sec is not None:
+            timeout_sec = max(timeout_sec, self._MIN_COMPOSE_TIMEOUT_SEC)
         full_command = [
             "docker",
             "compose",

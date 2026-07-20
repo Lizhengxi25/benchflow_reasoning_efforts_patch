@@ -53,6 +53,7 @@ from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config import normalize_agent_name, normalize_sandbox_user
 from benchflow.acp.client import ACPClient, ACPError
 from benchflow.acp.runtime import connect_acp, execute_prompts
+from benchflow.acp.types import StopReason
 from benchflow.agents.credentials import (
     upload_subscription_auth,
     write_credential_files,
@@ -94,6 +95,9 @@ _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
 SKILL_MODE_DEFAULT = "default"
 SKILL_MODE_SELF_GEN = "self-gen"
 GENERATED_SKILLS_ROOT = "/app/generated-skills"
+_CODEX_NATIVE_COMPLETION_POLL_SEC = 10
+_CODEX_ACP_COMPLETION_GRACE_SEC = 15
+_CODEX_ACP_CANCEL_GRACE_SEC = 5
 
 # Heavy dependency/build/VCS dirs excluded when capturing the agent workspace
 # (capture_workspace) — they bloat the tarball and aren't what the agent authored.
@@ -125,6 +129,117 @@ def _agent_launch_with_web_policy(agent: str, *, disallow: bool) -> str:
     if agent_cfg and agent_cfg.disallow_web_tools_launch_suffix:
         return launch + agent_cfg.disallow_web_tools_launch_suffix
     return launch
+
+
+async def _count_codex_native_task_completions(
+    env: Any,
+    session_id: str,
+    sandbox_user: str | None,
+) -> int:
+    """Count terminal events in the native Codex log for one ACP session."""
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    sessions_dir = shlex.quote(f"{home}/.codex/sessions")
+    session_pattern = shlex.quote(f"*{session_id}.jsonl")
+    marker = shlex.quote('"type":"task_complete"')
+    result = await env.exec(
+        f"find {sessions_dir} -type f -name {session_pattern} "
+        f"-exec grep -h -c -F {marker} {{}} + 2>/dev/null || true",
+        user="root",
+        timeout_sec=10,
+    )
+    return sum(
+        int(line)
+        for line in (result.stdout or "").splitlines()
+        if line.strip().isdigit()
+    )
+
+
+async def _wait_for_codex_native_task_complete(
+    env: Any,
+    session_id: str,
+    sandbox_user: str | None,
+    baseline: int,
+) -> None:
+    """Wait until Codex records a new task_complete for this ACP session."""
+    while True:
+        await asyncio.sleep(_CODEX_NATIVE_COMPLETION_POLL_SEC)
+        try:
+            current = await _count_codex_native_task_completions(
+                env, session_id, sandbox_user
+            )
+        except Exception as exc:
+            logger.debug("Codex native completion probe failed: %s", exc)
+            continue
+        if current > baseline:
+            return
+
+
+async def _prefer_acp_with_codex_native_fallback(
+    execute_coro: Any,
+    native_completion_coro: Any,
+    acp_client: ACPClient,
+    session: Any,
+    *,
+    completion_grace_sec: float = _CODEX_ACP_COMPLETION_GRACE_SEC,
+    cancel_grace_sec: float = _CODEX_ACP_CANCEL_GRACE_SEC,
+) -> tuple[list[dict], int]:
+    """Prefer ACP completion, but recover a single Codex turn that already ended.
+
+    codex-acp 0.15.0 can leave ``session/prompt`` pending after the native
+    Codex session has emitted ``task_complete``. The native marker is terminal,
+    so after a short ACP grace period it is safe to close this one-turn session
+    and let the normal native-session harvest supply the authoritative trace.
+    """
+    execute_task = asyncio.create_task(execute_coro)
+    completion_task = asyncio.create_task(native_completion_coro)
+    try:
+        done, _pending = await asyncio.wait(
+            {execute_task, completion_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if execute_task in done:
+            return execute_task.result()
+
+        completion_error = completion_task.exception()
+        if completion_error is not None:
+            logger.warning(
+                "Codex native completion watcher failed; waiting for ACP: %s",
+                completion_error,
+            )
+            return await execute_task
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(execute_task), timeout=completion_grace_sec
+            )
+        except TimeoutError:
+            logger.warning(
+                "Native Codex session reached task_complete but ACP prompt is still "
+                "pending; cancelling the completed one-turn prompt"
+            )
+
+        with contextlib.suppress(Exception):
+            await acp_client.cancel()
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(execute_task), timeout=cancel_grace_sec
+            )
+        except TimeoutError:
+            execute_task.cancel()
+            with contextlib.suppress(BaseException):
+                await execute_task
+
+        session.stop_reason = StopReason.END_TURN
+        session.mark_prompt_end()
+        return _capture_session_trajectory(session), len(session.tool_calls)
+    finally:
+        if not execute_task.done():
+            execute_task.cancel()
+            with contextlib.suppress(BaseException):
+                await execute_task
+        if not completion_task.done():
+            completion_task.cancel()
+            with contextlib.suppress(BaseException):
+                await completion_task
 
 
 def _apply_provider_agent_launch(
@@ -188,15 +303,48 @@ def _apply_reasoning_effort(launch: str, agent: str, effort: str | None) -> str:
     agent_cfg = AGENTS.get(agent)
     flag_tmpl = getattr(agent_cfg, "reasoning_effort_flag", "")
     if not flag_tmpl:
+        if getattr(agent_cfg, "reasoning_effort_env", ""):
+            # Effort is delivered via the agent env instead (see
+            # _apply_reasoning_effort_env); the launch command stays as-is.
+            return launch
         raise ValueError(
             f"agent {agent!r} does not support --reasoning-effort "
-            f"(no reasoning_effort_flag in its AgentConfig). Supported "
-            f"agents: "
+            f"(no reasoning_effort_flag or reasoning_effort_env in its "
+            f"AgentConfig). Supported agents: "
             + ", ".join(
-                name for name, cfg in AGENTS.items() if cfg.reasoning_effort_flag
+                name
+                for name, cfg in AGENTS.items()
+                if cfg.reasoning_effort_flag or cfg.reasoning_effort_env
             )
         )
     return launch + " " + flag_tmpl.format(value=effort)
+
+
+def _apply_reasoning_effort_env(
+    agent_env: dict[str, str], agent: str, effort: str | None
+) -> dict[str, str]:
+    """Inject env-driven reasoning effort (e.g. Claude Code's thinking budget).
+
+    Agents with ``reasoning_effort_env`` on their ``AgentConfig`` take
+    reasoning depth from an environment variable rather than a launch flag;
+    the value comes from the agent's ``reasoning_effort_env_values`` table.
+    A requested effort the table does not define raises rather than silently
+    running at the agent's default depth.
+    """
+    if not effort:
+        return agent_env
+    agent_cfg = AGENTS.get(agent)
+    env_name = getattr(agent_cfg, "reasoning_effort_env", "")
+    if not env_name:
+        return agent_env
+    values = getattr(agent_cfg, "reasoning_effort_env_values", None) or {}
+    if effort not in values:
+        raise ValueError(
+            f"agent {agent!r} has no reasoning_effort_env_values entry for "
+            f"{effort!r}; defined efforts: {sorted(values)}"
+        )
+    agent_env[env_name] = values[effort]
+    return agent_env
 
 
 def _skill_nudge(agent_env: dict[str, str] | None) -> str:
@@ -1044,6 +1192,9 @@ class Rollout:
             resolve_agent_env(cfg.primary_agent, cfg.primary_model, cfg.agent_env),
             disallow=self._disallow_web_tools,
         )
+        self._agent_env = _apply_reasoning_effort_env(
+            self._agent_env, cfg.primary_agent, cfg.reasoning_effort
+        )
         self._resolved_prompts = _resolve_prompts(
             cfg.task_path,
             cfg.prompts,
@@ -1319,13 +1470,54 @@ class Rollout:
             else self._config.agent_idle_timeout
         )
 
-        trajectory, n_tool_calls = await execute_prompts(
+        execute_coro = execute_prompts(
             self._acp_client,
             self._session,
             effective_prompts,
             timeout,
             idle_timeout=idle_timeout,
         )
+        active_agent = active_role.agent if active_role else self._config.primary_agent
+        total_turns = sum(
+            len(scene.turns) for scene in self._config.effective_scenes
+        )
+        use_codex_native_fallback = (
+            active_agent == "codex-acp"
+            and self._config.environment == "docker"
+            and len(effective_prompts) == 1
+            and total_turns == 1
+        )
+        if use_codex_native_fallback:
+            try:
+                baseline = await _count_codex_native_task_completions(
+                    self._env,
+                    self._session.session_id,
+                    self._config.sandbox_user,
+                )
+            except Exception as exc:
+                # The native-marker race is an optimization; a probe failure
+                # must not fail the rollout — run the plain ACP path instead.
+                logger.warning(
+                    "Codex native completion baseline probe failed; "
+                    "disabling the native fallback for this rollout: %s",
+                    exc,
+                )
+                use_codex_native_fallback = False
+        if use_codex_native_fallback:
+            native_completion_coro = _wait_for_codex_native_task_complete(
+                self._env,
+                self._session.session_id,
+                self._config.sandbox_user,
+                baseline,
+            )
+            trajectory, n_tool_calls = await _prefer_acp_with_codex_native_fallback(
+                execute_coro,
+                native_completion_coro,
+                self._acp_client,
+                self._session,
+            )
+        else:
+            trajectory, n_tool_calls = await execute_coro
 
         # trajectory and n_tool_calls are cumulative for this session.
         # Compute the delta since last execute() on this session.

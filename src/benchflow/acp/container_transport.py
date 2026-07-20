@@ -12,6 +12,8 @@ from .transport import Transport, decode_json_rpc_message
 
 logger = logging.getLogger(__name__)
 
+_STDERR_DRAIN_CLOSE_TIMEOUT_SEC = 5
+
 
 class ContainerTransport(Transport):
     """ACP transport that speaks to an agent running inside a sandbox.
@@ -117,7 +119,7 @@ class ContainerTransport(Transport):
             logger.debug(f"Non-JSON-RPC from container agent: {text[:200]}")
 
     async def close(self) -> None:
-        """Terminate the agent, drain stderr through EOF, then close its logs."""
+        """Terminate the agent, bounded-drain stderr, then close its logs."""
         process_closed = False
         try:
             await self._cp.close()
@@ -126,6 +128,22 @@ class ContainerTransport(Transport):
             if self._stderr_task:
                 if not process_closed:
                     self._stderr_task.cancel()
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(self._stderr_task),
+                            timeout=_STDERR_DRAIN_CLOSE_TIMEOUT_SEC,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Timed out draining agent stderr after process close; "
+                            "cancelling the drain task"
+                        )
+                        self._stderr_task.cancel()
+                    except Exception:
+                        logger.warning(
+                            "Agent stderr drain failed during close", exc_info=True
+                        )
                 await asyncio.gather(self._stderr_task, return_exceptions=True)
                 self._stderr_task = None
             self._close_log_files()

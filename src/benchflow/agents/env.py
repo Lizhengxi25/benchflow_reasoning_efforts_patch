@@ -352,8 +352,20 @@ def resolve_agent_env(
                         "Using host subscription auth (no %s set)",
                         req_key,
                     )
-    # Increase output token limit to avoid truncation errors
-    agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    # Increase output token limit to avoid truncation errors. Haiku-tier
+    # models cap output at 64K; requesting more 400s on every call.
+    max_output = "64000" if model and "haiku" in model.lower() else "128000"
+    agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", max_output)
+    # Single-model purity: Claude Code resolves its "sonnet"/"opus"/"haiku"
+    # aliases (e.g. for Task subagents) independently of ANTHROPIC_MODEL, and
+    # bundled versions can map an alias to an invalid snapshot (observed:
+    # claude-sonnet-4-5-20250514 → ACP -32603). Pin every alias to the
+    # rollout model so no other model is ever requested.
+    if agent == "claude-agent-acp" and agent_env.get("ANTHROPIC_MODEL"):
+        for alias in ("SONNET", "OPUS", "HAIKU"):
+            agent_env.setdefault(
+                f"ANTHROPIC_DEFAULT_{alias}_MODEL", agent_env["ANTHROPIC_MODEL"]
+            )
     # Disable telemetry/non-essential traffic in container
     agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     return agent_env

@@ -270,10 +270,16 @@ class AgentConfig:
     # rollout appends ``" " + flag.format(value=<effort>)`` to launch_cmd
     # right after the no-web suffix; the resulting string is word-split by
     # bash inside the sandbox so each ``-c key=value`` arrives as a
-    # separate argv item.  Empty (the default) means the agent does not
-    # support runtime reasoning-effort overrides — passing
-    # ``--reasoning-effort`` to such an agent raises ``ValueError`` at
+    # separate argv item.  When neither this nor ``reasoning_effort_env``
+    # is set, passing ``--reasoning-effort`` raises ``ValueError`` at
     # setup, not silently no-ops.
+    reasoning_effort_env: str = ""
+    # Env-var alternative for agents whose runtime takes reasoning depth
+    # from the environment instead of a launch flag (Claude Code reads its
+    # extended-thinking budget from MAX_THINKING_TOKENS).  When set, the
+    # rollout injects ``reasoning_effort_env_values[effort]`` into the
+    # agent env under this name; the launch command is left untouched.
+    reasoning_effort_env_values: dict[str, str] | None = None
 
 
 # Accepted values for ``--reasoning-effort``.  Mirrors the Codex CLI's
@@ -308,6 +314,21 @@ def normalize_reasoning_effort(value: str | None) -> str | None:
     return value
 
 
+# Claude Code has no reasoning-effort launch flag; its extended-thinking
+# budget is env-driven via MAX_THINKING_TOKENS.  Tiers follow Claude Code's
+# own keyword budgets ("think"=4k, "megathink"=10k, "ultrathink"=31999);
+# xhigh stays under Haiku 4.5's 64K output cap (thinking budget must be
+# strictly below max_tokens on budget-based models).
+CLAUDE_CODE_THINKING_BUDGETS: dict[str, str] = {
+    "none": "0",
+    "minimal": "1024",
+    "low": "4096",
+    "medium": "10000",
+    "high": "31999",
+    "xhigh": "59999",
+}
+
+
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
@@ -335,6 +356,8 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
+        reasoning_effort_env="MAX_THINKING_TOKENS",
+        reasoning_effort_env_values=CLAUDE_CODE_THINKING_BUDGETS,
         disallow_web_tools_setup_cmd=_json_settings_merge(
             "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
             'd.setdefault("permissions",{}).setdefault("deny",[]);'
