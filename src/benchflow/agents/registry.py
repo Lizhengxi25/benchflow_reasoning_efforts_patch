@@ -158,6 +158,130 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     return f"{cmd} {args}".rstrip()
 
 
+_REQUEST_FILTER_PROXY_PATH = f"{_BENCHFLOW_BIN_PREFIX}/request-filter-proxy"
+_REQUEST_FILTER_PROXY = (Path(__file__).parent / "request_filter_proxy.py").read_text()
+
+
+def _request_filtering_js_launcher(binary: str) -> str:
+    """Return a JS-agent launcher that conditionally starts the loopback filter."""
+    node = f"{_BENCHFLOW_NODE_PREFIX}/bin/node"
+    agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
+    return f"""#!/usr/bin/env python3
+import os
+import http.client
+import json
+import socket
+import subprocess
+import sys
+import time
+
+NODE = {node!r}
+AGENT_BIN = {agent_bin!r}
+AGENT_NAME = {binary!r}
+PROXY = {_REQUEST_FILTER_PROXY_PATH!r}
+PROXY_HOST = "127.0.0.1"
+PROXY_PORT = 17891
+PROXY_URL = f"http://{{PROXY_HOST}}:{{PROXY_PORT}}"
+HEALTH_PATH = "/_benchflow/request-filter-health"
+
+
+def listening():
+    try:
+        with socket.create_connection((PROXY_HOST, PROXY_PORT), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def current_config():
+    try:
+        connection = http.client.HTTPConnection(PROXY_HOST, PROXY_PORT, timeout=0.2)
+        connection.request("GET", HEALTH_PATH)
+        response = connection.getresponse()
+        if response.status != 200:
+            return None
+        return json.loads(response.read())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    finally:
+        try:
+            connection.close()
+        except (NameError, OSError):
+            pass
+
+
+mode = os.environ.get("BENCHFLOW_PROVIDER_REQUEST_FILTER", "")
+if mode:
+    upstream = os.environ.get("BENCHFLOW_PROVIDER_BASE_URL", "")
+    if not upstream:
+        raise SystemExit(
+            "BENCHFLOW_PROVIDER_REQUEST_FILTER requires BENCHFLOW_PROVIDER_BASE_URL"
+        )
+    expected_config = {{"mode": mode, "upstream": upstream}}
+    existing_config = current_config()
+    if listening() and existing_config != expected_config:
+        raise SystemExit(
+            "request-filter port is already in use with a different configuration"
+        )
+    if existing_config is None:
+        log = open("/tmp/benchflow-request-filter.log", "ab", buffering=0)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                PROXY,
+                "--upstream",
+                upstream,
+                "--mode",
+                mode,
+                "--host",
+                PROXY_HOST,
+                "--port",
+                str(PROXY_PORT),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 10
+        while current_config() != expected_config:
+            if process.poll() is not None:
+                raise SystemExit(
+                    f"BenchFlow request filter exited with {{process.returncode}}; "
+                    "see /tmp/benchflow-request-filter.log"
+                )
+            if time.monotonic() >= deadline:
+                process.terminate()
+                raise SystemExit("timed out starting BenchFlow request filter")
+            time.sleep(0.05)
+    no_proxy = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+    entries = [item for item in no_proxy.split(",") if item]
+    for item in ("127.0.0.1", "localhost"):
+        if item not in entries:
+            entries.append(item)
+    os.environ["NO_PROXY"] = ",".join(entries)
+    os.environ["no_proxy"] = os.environ["NO_PROXY"]
+    if AGENT_NAME == "claude-agent-acp":
+        os.environ["ANTHROPIC_BASE_URL"] = PROXY_URL
+
+os.execv(NODE, [NODE, AGENT_BIN, *sys.argv[1:]])
+"""
+
+
+def _request_filtering_js_agent_install(binary: str, package: str) -> str:
+    """Install a JS agent plus the generic opt-in request-filter launcher."""
+    return " && ".join(
+        [
+            _js_agent_install(binary, package),
+            _install_python_script(_REQUEST_FILTER_PROXY_PATH, _REQUEST_FILTER_PROXY),
+            _install_python_script(
+                f"{_BENCHFLOW_BIN_PREFIX}/{binary}",
+                _request_filtering_js_launcher(binary),
+            ),
+        ]
+    )
+
+
 # Path to the openclaw ACP shim script
 _OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
@@ -314,7 +438,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
-        install_cmd=_js_agent_install(
+        install_cmd=_request_filtering_js_agent_install(
             "claude-agent-acp", "@zed-industries/claude-agent-acp"
         ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
@@ -325,6 +449,7 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "ANTHROPIC_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "ANTHROPIC_AUTH_TOKEN",
             "BENCHFLOW_PROVIDER_MODEL": "ANTHROPIC_MODEL",
+            "BENCHFLOW_PROVIDER_MODEL_CONTEXT_WINDOW": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
         },
         subscription_auth=SubscriptionAuth(
             replaces_env="ANTHROPIC_API_KEY",
@@ -341,6 +466,7 @@ AGENTS: dict[str, AgentConfig] = {
             '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
             'if t not in d["permissions"]["deny"]]',
         ),
+        reasoning_effort_flag="--effort {value}",
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -389,7 +515,9 @@ AGENTS: dict[str, AgentConfig] = {
         name="codex-acp",
         description="OpenAI Codex agent via ACP",
         skill_paths=["$HOME/.agents/skills"],
-        install_cmd=_js_agent_install("codex-acp", "@zed-industries/codex-acp"),
+        install_cmd=_request_filtering_js_agent_install(
+            "codex-acp", "@zed-industries/codex-acp"
+        ),
         launch_cmd=_js_agent_launch(
             "codex-acp",
             "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL} "

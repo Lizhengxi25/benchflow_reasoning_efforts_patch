@@ -144,6 +144,18 @@ def _apply_provider_agent_launch(
     if provider is None:
         return launch
     _provider_name, provider_cfg = provider
+    request_filter = agent_env.get("BENCHFLOW_PROVIDER_REQUEST_FILTER", "")
+    if request_filter:
+        from benchflow.agents.request_filter_proxy import validate_filter_mode
+
+        try:
+            validate_filter_mode(request_filter)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsupported BENCHFLOW_PROVIDER_REQUEST_FILTER={request_filter!r}"
+            ) from exc
+        if agent not in {"claude-agent-acp", "codex-acp"}:
+            raise ValueError(f"agent {agent!r} has no request-filtering launch wrapper")
     suffix_templates = []
     if suffix_template := provider_cfg.agent_launch_suffixes.get(agent):
         suffix_templates.append(suffix_template)
@@ -151,6 +163,21 @@ def _apply_provider_agent_launch(
         agent, {}
     ).get(model):
         suffix_templates.append(model_suffix_template)
+    context_window = agent_env.get("BENCHFLOW_PROVIDER_MODEL_CONTEXT_WINDOW", "")
+    if context_window:
+        try:
+            parsed_context_window = int(context_window)
+        except ValueError as exc:
+            raise ValueError(
+                "BENCHFLOW_PROVIDER_MODEL_CONTEXT_WINDOW must be a positive integer"
+            ) from exc
+        if parsed_context_window <= 0:
+            raise ValueError(
+                "BENCHFLOW_PROVIDER_MODEL_CONTEXT_WINDOW must be a positive integer"
+            )
+        context_window = str(parsed_context_window)
+        if agent == "codex-acp":
+            suffix_templates.append("-c model_context_window={context_window}")
     if not suffix_templates:
         return launch
     base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL", "")
@@ -159,10 +186,16 @@ def _apply_provider_agent_launch(
             f"Provider {_provider_name!r} requires a resolved base URL for {agent!r}"
         )
     home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    agent_base_url = (
+        "http://127.0.0.1:17891"
+        if request_filter and agent == "codex-acp"
+        else base_url
+    )
     template_values = {
-        "base_url": shlex.quote(base_url),
+        "base_url": shlex.quote(agent_base_url),
         "home": shlex.quote(home),
         "model": shlex.quote(strip_provider_prefix(model)),
+        "context_window": context_window,
     }
     suffixes = [template.format(**template_values) for template in suffix_templates]
     return " ".join([launch, *suffixes])

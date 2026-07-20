@@ -180,7 +180,8 @@ class SDK:
         """Run a task — delegates to :func:`benchflow.run`.
 
         ``reasoning_effort``: per-run override for agents whose AgentConfig
-        sets ``reasoning_effort_flag`` (currently only ``codex-acp``).
+        sets ``reasoning_effort_flag`` (currently ``codex-acp`` and
+        ``claude-agent-acp``).
         Accepted values: none/minimal/low/medium/high/xhigh.  Validated in
         ``RolloutConfig.__post_init__``; passing the kwarg to an agent that
         does not support it raises during ``Rollout.setup``.

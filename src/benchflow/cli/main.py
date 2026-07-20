@@ -231,7 +231,8 @@ def run(
             help=(
                 "Agent reasoning effort: none|minimal|low|medium|high|xhigh. "
                 "Only honored by agents whose AgentConfig declares "
-                "reasoning_effort_flag (currently: codex-acp). Passing "
+                "reasoning_effort_flag (currently: codex-acp and "
+                "claude-agent-acp). Passing "
                 "this flag to an unsupported agent fails fast at rollout "
                 "setup."
             ),

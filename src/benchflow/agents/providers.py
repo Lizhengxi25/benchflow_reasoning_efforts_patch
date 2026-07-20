@@ -124,6 +124,235 @@ _MINIMAX_M3_CODEX_CATALOG = """{
 }
 """
 
+_OPENROUTER_CODEX_CATALOG = """{
+  "models": [
+    {
+      "slug": "minimax/minimax-m3",
+      "display_name": "MiniMax-M3 (OpenRouter)",
+      "description": "MiniMax via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "Think-Off"},
+        {"effort": "high", "description": "Adaptive Thinking"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "qwen/qwen3-coder-next",
+      "display_name": "Qwen3 Coder Next (OpenRouter)",
+      "description": "Qwen3 Coder Next via OpenRouter",
+      "default_reasoning_level": "none",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "Non-thinking"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on Qwen3-Coder-Next. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "tencent/hy3",
+      "display_name": "Tencent Hy3 (OpenRouter)",
+      "description": "Tencent Hy3 via OpenRouter",
+      "default_reasoning_level": "none",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "No thinking"},
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "high", "description": "High reasoning"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on Tencent Hy3. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "deepseek/deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash (OpenRouter)",
+      "description": "DeepSeek V4 Flash via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "High reasoning"},
+        {"effort": "xhigh", "description": "Maximum reasoning"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on DeepSeek V4 Flash. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "deepseek/deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro (OpenRouter)",
+      "description": "DeepSeek V4 Pro via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "High reasoning"},
+        {"effort": "xhigh", "description": "Maximum reasoning"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on DeepSeek V4 Pro. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "moonshotai/kimi-k2.6",
+      "display_name": "Kimi K2.6 (OpenRouter)",
+      "description": "Kimi K2.6 via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "Harness placeholder; provider default is preserved"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on Kimi K2.6. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "z-ai/glm-5.2",
+      "display_name": "GLM 5.2 (OpenRouter)",
+      "description": "GLM 5.2 via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "High reasoning"},
+        {"effort": "xhigh", "description": "Maximum reasoning"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on GLM 5.2. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "qwen/qwen3.5-397b-a17b",
+      "display_name": "Qwen3.5 397B A17B (OpenRouter)",
+      "description": "Qwen3.5 397B A17B via OpenRouter",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {"effort": "high", "description": "Harness placeholder; provider default is preserved"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on Qwen3.5 397B A17B. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "openai/gpt-oss-120b",
+      "display_name": "GPT-OSS-120B (OpenRouter)",
+      "description": "GPT-OSS-120B via OpenRouter",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on GPT-OSS-120B. You and the user share the same workspace and collaborate to achieve the user's goals. Use only tools declared in each API request. Use exec_command for shell commands, file reads, searches, and directory listings, and use apply_patch for edits. Never call read_file, list_dir, list_directory, or spawn_agent. Work in the current agent without subagents.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "truncation_policy": {"mode": "bytes", "limit": 10000},
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    }
+  ]
+}
+"""
+
+_OPENROUTER_CODEX_SINGLE_AGENT_SUFFIXES = {
+    # ACP creates the Codex session before set_model, so pin the catalog slug
+    # here. The outer no-network task container is the sandbox boundary; its
+    # ARM image has no bwrap for Codex's nested workspace sandbox.
+    # MiniMax keeps its pre-profile context override for direct BenchFlow use.
+    "openrouter/minimax/minimax-m3": (
+        "-c model_context_window=1000000 -c features.multi_agent=false"
+    ),
+    **{
+        model: (
+            "-c model={model} -c sandbox_mode=danger-full-access "
+            "-c features.multi_agent=false"
+        )
+        for model in (
+            "openrouter/qwen/qwen3-coder-next",
+            "openrouter/tencent/hy3",
+            "openrouter/deepseek/deepseek-v4-flash",
+            "openrouter/deepseek/deepseek-v4-pro",
+            "openrouter/moonshotai/kimi-k2.6",
+            "openrouter/z-ai/glm-5.2",
+            "openrouter/qwen/qwen3.5-397b-a17b",
+            "openrouter/openai/gpt-oss-120b",
+        )
+    },
+}
+
 
 @dataclass
 class ProviderConfig:
@@ -402,20 +631,17 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "-c model_providers.openrouter.base_url={base_url} "
                 "-c model_providers.openrouter.env_key=OPENROUTER_API_KEY "
                 "-c model_providers.openrouter.wire_api=responses "
-                "-c model_context_window=1000000 "
-                "-c model_catalog_json={home}/.codex/model-catalogs/minimax-m3.json"
+                "-c model_catalog_json={home}/.codex/model-catalogs/openrouter.json"
             ),
         },
         agent_model_launch_suffixes={
-            "codex-acp": {
-                "openrouter/minimax/minimax-m3": "-c features.multi_agent=false",
-            },
+            "codex-acp": _OPENROUTER_CODEX_SINGLE_AGENT_SUFFIXES,
         },
         agent_files={
             "codex-acp": [
                 {
-                    "path": "{home}/.codex/model-catalogs/minimax-m3.json",
-                    "content": _MINIMAX_M3_CODEX_CATALOG,
+                    "path": "{home}/.codex/model-catalogs/openrouter.json",
+                    "content": _OPENROUTER_CODEX_CATALOG,
                 }
             ],
         },
