@@ -401,7 +401,13 @@ PROVIDERS: dict[str, ProviderConfig] = {
                 "-c model_providers.openrouter.name=OpenRouter "
                 "-c model_providers.openrouter.base_url={base_url} "
                 "-c model_providers.openrouter.env_key=OPENROUTER_API_KEY "
-                "-c model_providers.openrouter.wire_api=responses "
+                # chat, not responses: OpenRouter's responses-API translation
+                # intermittently fails to parse MiniMax M3's native tool calls
+                # and streams them into the reasoning channel as mangled
+                # "]<]minimax[>[<tool_call>" text; codex then ends the turn
+                # with no message and no call (~50% of turns died mid-task).
+                # The chat-completions translation path does not exhibit this.
+                "-c model_providers.openrouter.wire_api=chat "
                 "-c model_context_window=1000000 "
                 "-c model_catalog_json={home}/.codex/model-catalogs/minimax-m3.json"
             ),

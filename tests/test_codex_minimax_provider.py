@@ -54,7 +54,11 @@ def test_codex_launch_uses_named_responses_provider(
     assert f"-c model_provider={provider}" in launch
     assert f"-c model_providers.{provider}.base_url={base_url}" in launch
     assert f"-c model_providers.{provider}.env_key={key_env}" in launch
-    assert f"-c model_providers.{provider}.wire_api=responses" in launch
+    # OpenRouter uses the chat wire: its responses-API translation mangles
+    # MiniMax M3's native tool calls into the reasoning stream (turns end
+    # with no message). Direct MiniMax keeps the responses wire.
+    expected_wire = "chat" if provider == "openrouter" else "responses"
+    assert f"-c model_providers.{provider}.wire_api={expected_wire}" in launch
     assert "-c model_context_window=1000000" in launch
     assert "-c model_catalog_json=/root/.codex/model-catalogs/minimax-m3.json" in launch
 
