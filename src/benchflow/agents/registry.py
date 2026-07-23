@@ -486,6 +486,12 @@ class AgentConfig:
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
+    model_selection_at_launch: bool = False
+    # Some agents, notably Codex, must receive the model before session/new so
+    # their model catalog and base instructions are fixed for the whole session.
+    reasoning_effort_at_launch: bool = False
+    # Same ownership rule for reasoning effort. This avoids a second,
+    # post-session configuration path with different semantics.
     # ACP session config option id used for model selection when an agent
     # exposes model as a session option instead of implementing set_model.
     acp_model_config_id: str = ""
@@ -625,6 +631,11 @@ AGENTS: dict[str, AgentConfig] = {
             'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
             'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
             '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+            "fi; "
+            'if [ -n "$BENCHFLOW_CODEX_MODEL_CATALOG_JSON" ]; then '
+            "mkdir -p \"$h/.codex\" && printf '%s' "
+            '"$BENCHFLOW_CODEX_MODEL_CATALOG_JSON" '
+            '> "$h/.codex/benchflow-model-catalog.json"; '
             "fi; exec "
             + _js_agent_launch(
                 "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
@@ -637,6 +648,8 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
+        model_selection_at_launch=True,
+        reasoning_effort_at_launch=True,
         subscription_auth=SubscriptionAuth(
             replaces_env="OPENAI_API_KEY",
             detect_file="~/.codex/auth.json",
@@ -644,7 +657,6 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
-        disallow_web_tools_launch_suffix=" -c tools.web_search=false",
     ),
     "gemini": AgentConfig(
         name="gemini",
@@ -941,6 +953,14 @@ AGENTS: dict[str, AgentConfig] = {
             'case "$LLM_TIMEOUT" in *[!0-9]*) '
             'echo "LLM_TIMEOUT must be a non-negative integer" >&2; exit 2;; esac; '
             'printf \',"timeout":%s\' "$LLM_TIMEOUT"; fi; '
+            'if [ -n "$LLM_MAX_INPUT_TOKENS" ]; then '
+            'case "$LLM_MAX_INPUT_TOKENS" in *[!0-9]*) '
+            'echo "LLM_MAX_INPUT_TOKENS must be a non-negative integer" >&2; exit 2;; esac; '
+            'printf \',"max_input_tokens":%s\' "$LLM_MAX_INPUT_TOKENS"; fi; '
+            'if [ -n "$LLM_MAX_OUTPUT_TOKENS" ]; then '
+            'case "$LLM_MAX_OUTPUT_TOKENS" in *[!0-9]*) '
+            'echo "LLM_MAX_OUTPUT_TOKENS must be a non-negative integer" >&2; exit 2;; esac; '
+            'printf \',"max_output_tokens":%s\' "$LLM_MAX_OUTPUT_TOKENS"; fi; '
             'case "$LLM_REASONING_EFFORT" in '
             'max) printf \',"litellm_extra_body":{"reasoning":{"effort":"max"}}\' ;; '
             "none|low|medium|high|xhigh) "
@@ -1169,6 +1189,8 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        model_selection_at_launch=config.model_selection_at_launch,
+        reasoning_effort_at_launch=config.reasoning_effort_at_launch,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
@@ -1363,6 +1385,8 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    model_selection_at_launch: bool = False,
+    reasoning_effort_at_launch: bool = False,
     acp_model_config_id: str = "",
     acp_effort_config_id: str = "",
     disallow_web_tools_setup_cmd: str = "",
@@ -1402,6 +1426,8 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        model_selection_at_launch=model_selection_at_launch,
+        reasoning_effort_at_launch=reasoning_effort_at_launch,
         acp_model_config_id=acp_model_config_id,
         acp_effort_config_id=acp_effort_config_id,
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,

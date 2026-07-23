@@ -71,17 +71,16 @@ def test_agent_launch_passthrough_without_web_policy() -> None:
     assert planes.agent_launch(agent, disallow_web_tools=False) == expected
 
 
-def test_agent_launch_appends_web_tool_suffix_when_disallowed() -> None:
+def test_codex_launch_has_no_invalid_web_tool_suffix() -> None:
     planes = DefaultRolloutPlanes()
     agent = "codex-acp"
     cfg = AGENTS[agent]
-    suffix = cfg.disallow_web_tools_launch_suffix
-    assert suffix, "fixture agent must carry a web-tool suffix to exercise the branch"
+    assert cfg.disallow_web_tools_launch_suffix == ""
     launched = planes.agent_launch(agent, disallow_web_tools=True)
-    assert launched == AGENT_LAUNCH.get(agent, agent) + suffix
-    # The suffix is only appended under the disallow flag.
-    assert planes.agent_launch(agent, disallow_web_tools=True) != planes.agent_launch(
-        agent, disallow_web_tools=False
+    assert launched == AGENT_LAUNCH.get(agent, agent)
+    assert planes.agent_launch(agent, disallow_web_tools=True) == planes.agent_launch(
+        agent,
+        disallow_web_tools=False,
     )
 
 

@@ -47,6 +47,9 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
+        assert cfg.model_selection_at_launch is True
+        assert cfg.reasoning_effort_at_launch is True
+        assert cfg.disallow_web_tools_launch_suffix == ""
 
     def test_codex_acp_install_is_version_pinned(self):
         """Same @agentclientprotocol family as claude — pin so a floating latest
@@ -275,6 +278,26 @@ class TestOpenHandsConfig:
             (tmp_path / ".openhands" / "agent_settings.json").read_text()
         )
         assert settings["llm"]["timeout"] == 115200
+
+    def test_openhands_launch_cmd_writes_model_token_limits(self, tmp_path):
+        cfg = AGENTS["openhands"]
+        settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "LLM_MODEL": "openai/benchflow-glm-5.2",
+            "LLM_API_KEY": "proxy-key",
+            "LLM_MAX_INPUT_TOKENS": "1048576",
+            "LLM_MAX_OUTPUT_TOKENS": "131072",
+        }
+
+        subprocess.run(["bash", "-c", settings_cmd], env=env, check=True)
+
+        settings = json.loads(
+            (tmp_path / ".openhands" / "agent_settings.json").read_text()
+        )
+        assert settings["llm"]["max_input_tokens"] == 1_048_576
+        assert settings["llm"]["max_output_tokens"] == 131_072
 
     def test_openhands_launch_cmd_can_disable_subagents(self, tmp_path):
         """Guards PR #921 against the OpenHands post-tool delegation deadlock."""

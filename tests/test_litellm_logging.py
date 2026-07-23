@@ -57,6 +57,80 @@ def test_pre_call_hook_is_noop_for_pure_function_tools():
     )
 
 
+def test_pre_call_hook_omits_all_reasoning_controls_for_provider_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    monkeypatch.setenv("BENCHFLOW_PROVIDER_REQUEST_FILTER", "omit-reasoning")
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning": {"effort": "high"},
+        "reasoning_effort": "high",
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high", "format": {"type": "json"}},
+        "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+        "extra_body": {"reasoning": {"effort": "medium"}, "route": "fallback"},
+    }
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not None
+    assert "reasoning" not in cleaned
+    assert "reasoning_effort" not in cleaned
+    assert "thinking" not in cleaned
+    assert cleaned["output_config"] == {"format": {"type": "json"}}
+    assert cleaned["include"] == ["message.output_text.logprobs"]
+    assert cleaned["extra_body"] == {"route": "fallback"}
+    assert data["reasoning"] == {"effort": "high"}
+
+
+def test_pre_call_hook_normalizes_explicit_openrouter_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    monkeypatch.setenv(
+        "BENCHFLOW_PROVIDER_REQUEST_FILTER",
+        "reasoning-effort:xhigh",
+    )
+    data = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "reasoning_effort": "medium",
+        "extra_body": {"reasoning": {"effort": "low"}, "route": "fallback"},
+    }
+
+    cleaned = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert cleaned is not None
+    assert "reasoning_effort" not in cleaned
+    assert cleaned["extra_body"] == {
+        "reasoning": {"effort": "xhigh"},
+        "route": "fallback",
+    }
+
+
+def test_pre_call_hook_rejects_invalid_reasoning_filter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    monkeypatch.setenv(
+        "BENCHFLOW_PROVIDER_REQUEST_FILTER",
+        "reasoning-effort:default",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="experiment_fidelity/reasoning_filter_invalid",
+    ):
+        asyncio.run(
+            logger.async_pre_call_hook(
+                None,
+                None,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "completion",
+            )
+        )
+
+
 def test_pre_call_hook_opt_in_requests_token_logprobs(
     monkeypatch: pytest.MonkeyPatch,
 ):

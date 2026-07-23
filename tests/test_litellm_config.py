@@ -176,6 +176,23 @@ def test_openrouter_route_uses_openai_compatible_endpoint():
     assert route.required_env == ("OPENROUTER_API_KEY",)
 
 
+def test_openrouter_route_translates_agent_native_endpoint_to_gateway_upstream():
+    """Claude resolves OpenRouter's Anthropic skin, while LiteLLM itself must
+    call the OpenAI-compatible upstream."""
+    route = resolve_litellm_route(
+        "openrouter/z-ai/glm-5.2",
+        {
+            "OPENROUTER_API_KEY": "sk-openrouter",
+            "BENCHFLOW_PROVIDER_BASE_URL": "https://openrouter.ai/api",
+            "BENCHFLOW_PROVIDER_API_KEY": "sk-openrouter",
+            "BENCHFLOW_PROVIDER_PROTOCOL": "anthropic-messages",
+        },
+    )
+
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+    assert route.litellm_params["api_key"] == ("os.environ/BENCHFLOW_PROVIDER_API_KEY")
+
+
 def test_proxy_config_registers_plain_and_openai_aliases():
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",

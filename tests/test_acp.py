@@ -1107,8 +1107,8 @@ class TestConnectAcpModelSelection:
         assert "--reuid=agent" in transport_command
 
     @pytest.mark.asyncio
-    async def test_codex_uses_session_advertised_model_id(self, tmp_path):
-        """Guards commit 81ff286 against codex-acp rejecting bare set_model IDs."""
+    async def test_codex_selects_model_before_session_new(self, tmp_path):
+        """Codex model selection is a startup override, never session/set_model."""
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
@@ -1126,7 +1126,10 @@ class TestConnectAcpModelSelection:
                 "benchflow.acp.runtime.DockerProcess.from_sandbox_env",
                 return_value=MagicMock(),
             ),
-            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch(
+                "benchflow.acp.runtime.ContainerTransport",
+                return_value=MagicMock(),
+            ) as transport,
             patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
         ):
             await connect_acp(
@@ -1141,7 +1144,10 @@ class TestConnectAcpModelSelection:
                 agent_cwd="/app",
             )
 
-        mock_acp.set_model.assert_awaited_once_with("gpt-5.5[medium]")
+        launch = transport.call_args.kwargs["command"]
+        assert "-c model=gpt-5.5" in launch
+        mock_acp.set_model.assert_not_awaited()
+        mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_claude_uses_config_options_for_model_and_effort(self, tmp_path):

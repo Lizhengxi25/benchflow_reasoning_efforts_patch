@@ -282,7 +282,24 @@ def _route_registered_provider(
     )
     explicit_api_base = (env.get("BENCHFLOW_PROVIDER_BASE_URL") or "").strip()
     explicit_api_key = (env.get("BENCHFLOW_PROVIDER_API_KEY") or "").strip()
-    if explicit_api_base and explicit_api_key:
+    known_api_bases: set[str] = set()
+    for endpoint_protocol in provider_cfg.all_endpoints:
+        try:
+            known_api_bases.add(
+                resolve_base_url(
+                    provider_cfg,
+                    env,
+                    protocol=endpoint_protocol,
+                ).rstrip("/")
+            )
+        except KeyError:
+            continue
+    # resolve_provider_env records the endpoint native to the agent. The
+    # internal LiteLLM gateway deliberately uses the provider's completions
+    # endpoint instead, translating Claude/Responses traffic at its front door.
+    # A genuinely custom URL remains an override.
+    explicit_is_registered_endpoint = explicit_api_base.rstrip("/") in known_api_bases
+    if explicit_api_base and explicit_api_key and not explicit_is_registered_endpoint:
         api_base = explicit_api_base
     else:
         try:

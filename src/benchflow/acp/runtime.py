@@ -19,7 +19,9 @@ Does not own:
 
 import asyncio
 import contextlib
+import json
 import logging
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -68,6 +70,126 @@ _ACP_CONNECT_BASE_DELAY = 2.0
 _PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
 _ACP_HANDSHAKE_TIMEOUT_SEC = 60
 _OPENHANDS_DISABLE_SUBAGENTS_ENV = "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"
+_CODEX_MODEL_PROFILE_ENV = "BENCHFLOW_CODEX_MODEL_PROFILE_JSON"
+_CODEX_MODEL_CATALOG_ENV = "BENCHFLOW_CODEX_MODEL_CATALOG_JSON"
+_CODEX_CONTEXT_WINDOW_ENV = "BENCHFLOW_PROVIDER_MODEL_CONTEXT_WINDOW"
+_CODEX_SANDBOX_MODE_ENV = "BENCHFLOW_CODEX_SANDBOX_MODE"
+_CODEX_MODEL_CATALOG_PATH = "$h/.codex/benchflow-model-catalog.json"
+
+
+def _codex_proxy_model(model: str, agent_env: dict[str, str]) -> str:
+    """Return the model Codex must select when its process starts."""
+    if agent_env.get(_CODEX_MODEL_PROFILE_ENV):
+        raw = agent_env.get("CODEX_CONFIG", "")
+        if raw:
+            try:
+                config = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("CODEX_CONFIG must be valid JSON") from exc
+            configured = config.get("model") if isinstance(config, dict) else None
+            if isinstance(configured, str) and configured:
+                return configured
+    return strip_provider_prefix(model)
+
+
+def _materialize_codex_model_catalog(
+    agent_env: dict[str, str],
+    *,
+    launch_model: str,
+) -> bool:
+    """Build a one-model Codex catalog from project-owned model metadata."""
+    raw = agent_env.get(_CODEX_MODEL_PROFILE_ENV, "")
+    if not raw:
+        return False
+    try:
+        profile = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{_CODEX_MODEL_PROFILE_ENV} must be valid JSON") from exc
+    if not isinstance(profile, dict):
+        raise ValueError(f"{_CODEX_MODEL_PROFILE_ENV} must decode to an object")
+
+    required = {
+        "display_name",
+        "description",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "base_instructions",
+        "supports_reasoning_summaries",
+        "input_modalities",
+    }
+    missing = sorted(required - profile.keys())
+    if missing:
+        raise ValueError(f"{_CODEX_MODEL_PROFILE_ENV} is missing: {', '.join(missing)}")
+
+    entry = {
+        "slug": launch_model,
+        **profile,
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 0,
+        "default_reasoning_summary": "none",
+        "support_verbosity": False,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": True,
+        "experimental_supported_tools": [],
+    }
+    agent_env[_CODEX_MODEL_CATALOG_ENV] = json.dumps(
+        {"models": [entry]},
+        separators=(",", ":"),
+    )
+    return True
+
+
+def _apply_launch_owned_agent_config(
+    *,
+    agent: str,
+    agent_launch: str,
+    agent_env: dict[str, str],
+    model: str | None,
+    reasoning_effort: str | None,
+) -> str:
+    """Append startup-only model controls before an ACP process is spawned."""
+    agent_cfg = AGENTS.get(agent)
+    if not agent_cfg:
+        return agent_launch
+
+    overrides: list[str] = []
+    launch_model: str | None = None
+    if model and agent_cfg.model_selection_at_launch:
+        launch_model = _codex_proxy_model(model, agent_env)
+        overrides.extend(["-c", f"model={launch_model}"])
+
+    if reasoning_effort and agent_cfg.reasoning_effort_at_launch:
+        overrides.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
+
+    if agent_cfg.model_selection_at_launch:
+        context_window = agent_env.get(_CODEX_CONTEXT_WINDOW_ENV, "")
+        if context_window:
+            if not context_window.isdecimal() or int(context_window) <= 0:
+                raise ValueError(
+                    f"{_CODEX_CONTEXT_WINDOW_ENV} must be a positive integer"
+                )
+            overrides.extend(["-c", f"model_context_window={context_window}"])
+
+        sandbox_mode = agent_env.get(_CODEX_SANDBOX_MODE_ENV, "")
+        if sandbox_mode:
+            overrides.extend(["-c", f"sandbox_mode={sandbox_mode}"])
+
+    has_catalog = bool(
+        launch_model
+        and _materialize_codex_model_catalog(
+            agent_env,
+            launch_model=launch_model,
+        )
+    )
+
+    if not overrides and not has_catalog:
+        return agent_launch
+    suffix = f" {shlex.join(overrides)}" if overrides else ""
+    if has_catalog:
+        suffix += f' -c model_catalog_json="{_CODEX_MODEL_CATALOG_PATH}"'
+    return f"{agent_launch}{suffix}"
 
 
 async def _prepare_openhands_direct_execution(
@@ -461,7 +583,11 @@ async def _configure_acp_session(
 ) -> None:
     agent_cfg = AGENTS.get(agent)
 
-    if model and _model_selection_owned_by_env(agent, model, agent_env):
+    if model and agent_cfg and agent_cfg.model_selection_at_launch:
+        logger.info(
+            f"Skipping ACP model configuration for {agent} — process launch owns model selection"
+        )
+    elif model and _model_selection_owned_by_env(agent, model, agent_env):
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -492,6 +618,11 @@ async def _configure_acp_session(
             )
 
     if not reasoning_effort:
+        return
+    if agent_cfg and agent_cfg.reasoning_effort_at_launch:
+        logger.info(
+            f"Skipping ACP reasoning configuration for {agent} — process launch owns reasoning effort"
+        )
         return
     if not agent_cfg or not agent_cfg.acp_effort_config_id:
         raise RuntimeError(
@@ -542,6 +673,13 @@ async def connect_acp(
         env,
         agent=agent,
         agent_env=agent_env,
+    )
+    agent_launch = _apply_launch_owned_agent_config(
+        agent=agent,
+        agent_launch=agent_launch,
+        agent_env=agent_env,
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
 
     # Resolve agent binary path for non-docker environments

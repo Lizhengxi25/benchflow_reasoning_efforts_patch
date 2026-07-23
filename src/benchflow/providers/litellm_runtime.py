@@ -1251,6 +1251,10 @@ def _wire_litellm_agent_env(
     if agent == "claude-agent-acp":
         updated["ANTHROPIC_BASE_URL"] = base_url.rstrip("/")
         updated["ANTHROPIC_AUTH_TOKEN"] = master_key
+        # Claude Code otherwise may prefer a host credential over the explicit
+        # OpenRouter/LiteLLM bearer token. Its documented custom-gateway setup
+        # requires ANTHROPIC_API_KEY to be present and empty.
+        updated["ANTHROPIC_API_KEY"] = ""
         updated["ANTHROPIC_MODEL"] = route.model_alias
         updated[LITELLM_MODEL_VIA_ENV] = "1"
         for key in (

@@ -97,6 +97,17 @@ from litellm.integrations.custom_logger import CustomLogger
 
 
 _skill_catalog_gate_passed = False
+_REASONING_FILTER_ENV = "BENCHFLOW_PROVIDER_REQUEST_FILTER"
+_REASONING_FILTER_PREFIX = "reasoning-effort:"
+_REASONING_EFFORTS = {
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+}
 
 
 def _required_skill_names() -> tuple[str, ...]:
@@ -158,6 +169,86 @@ def _gate_opencode_skill_catalog(data: dict[str, Any]) -> None:
             f"visible={','.join(sorted(visible))}"
         )
     _skill_catalog_gate_passed = True
+
+
+def _reasoning_filter_mode() -> tuple[str, str | None] | None:
+    raw = os.environ.get(_REASONING_FILTER_ENV, "").strip().lower()
+    if not raw:
+        return None
+    if raw == "omit-reasoning":
+        return ("omit", None)
+    if raw.startswith(_REASONING_FILTER_PREFIX):
+        effort = raw.removeprefix(_REASONING_FILTER_PREFIX)
+        if effort in _REASONING_EFFORTS:
+            return ("effort", effort)
+    raise RuntimeError(
+        "experiment_fidelity/reasoning_filter_invalid: "
+        f"{_REASONING_FILTER_ENV}={raw!r}"
+    )
+
+
+def _without_reasoning_controls(data: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(data)
+    for key in (
+        "include_reasoning",
+        "reasoning",
+        "reasoning_effort",
+        "thinking",
+    ):
+        cleaned.pop(key, None)
+
+    output_config = cleaned.get("output_config")
+    if isinstance(output_config, dict):
+        output_config = dict(output_config)
+        output_config.pop("effort", None)
+        if output_config:
+            cleaned["output_config"] = output_config
+        else:
+            cleaned.pop("output_config", None)
+
+    include = cleaned.get("include")
+    if isinstance(include, list):
+        include = [
+            item
+            for item in include
+            if not (isinstance(item, str) and item.startswith("reasoning."))
+        ]
+        if include:
+            cleaned["include"] = include
+        else:
+            cleaned.pop("include", None)
+
+    for body_key in ("extra_body", "litellm_extra_body"):
+        body = cleaned.get(body_key)
+        if not isinstance(body, dict):
+            continue
+        body = dict(body)
+        for key in (
+            "include_reasoning",
+            "reasoning",
+            "reasoning_effort",
+            "thinking",
+        ):
+            body.pop(key, None)
+        if body:
+            cleaned[body_key] = body
+        else:
+            cleaned.pop(body_key, None)
+    return cleaned
+
+
+def _apply_reasoning_filter(data: dict[str, Any]) -> dict[str, Any] | None:
+    mode = _reasoning_filter_mode()
+    if mode is None:
+        return None
+    filtered = _without_reasoning_controls(data)
+    kind, effort = mode
+    if kind == "effort":
+        extra_body = filtered.get("extra_body")
+        extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+        extra_body["reasoning"] = {"effort": effort}
+        filtered["extra_body"] = extra_body
+    return filtered
 
 
 def _jsonable(value: Any) -> Any:
@@ -223,13 +314,6 @@ def _failure_traceback(detail: Any) -> str:
 
 
 class BenchFlowLiteLLMLogger(CustomLogger):
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        if isinstance(data, dict) and data.get("messages") is not None and "input" in data:
-            cleaned = dict(data)
-            cleaned.pop("input", None)
-            return cleaned
-        return None
-
     def _write(self, payload: dict[str, Any]) -> None:
         path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
         if not path:
@@ -258,6 +342,11 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = litellm_params.get(key)
             if value is not None:
                 request_body[key] = value
+        extra_body = optional_params.get("extra_body")
+        if not isinstance(extra_body, dict):
+            extra_body = kwargs.get("extra_body")
+        if isinstance(extra_body, dict) and extra_body.get("reasoning") is not None:
+            request_body["reasoning"] = extra_body["reasoning"]
         for key in ("logprobs", "top_logprobs"):
             value = optional_params.get(key)
             if value is None:
@@ -294,6 +383,10 @@ class BenchFlowLiteLLMLogger(CustomLogger):
         _gate_opencode_skill_catalog(data)
 
         cleaned = data
+
+        reasoning_filtered = _apply_reasoning_filter(cleaned)
+        if reasoning_filtered is not None:
+            cleaned = reasoning_filtered
 
         # Chat-completions backends reject the Responses-compatible ``input``
         # mirror when ``messages`` is already present. Copy before changing so

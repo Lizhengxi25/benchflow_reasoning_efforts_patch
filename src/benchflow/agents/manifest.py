@@ -84,6 +84,8 @@ _SHIM_ONLY = frozenset(
         "session_factory",
         "credential_files",
         "subscription_auth",
+        "model_selection_at_launch",
+        "reasoning_effort_at_launch",
         "acp_model_config_id",
         "acp_effort_config_id",
         "disallow_web_tools_setup_cmd",

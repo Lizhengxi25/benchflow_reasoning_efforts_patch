@@ -215,6 +215,11 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="OPENROUTER_API_KEY",
+        endpoints={
+            "openai-completions": "https://openrouter.ai/api/v1",
+            "openai-responses": "https://openrouter.ai/api/v1",
+            "anthropic-messages": "https://openrouter.ai/api",
+        },
     ),
     # TODO: add eu-openai (https://eu.api.openai.com/v1) when needed.
     # ── OpenAI-compatible inference servers (user-supplied base_url) ──

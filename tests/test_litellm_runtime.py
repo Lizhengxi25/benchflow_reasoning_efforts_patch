@@ -129,6 +129,7 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
 
     assert updated["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
     assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-benchflow-")
+    assert updated["ANTHROPIC_API_KEY"] == ""
     assert updated["ANTHROPIC_MODEL"] == "benchflow-claude-sonnet-4-6"
     assert "CLAUDE_CODE_USE_BEDROCK" not in updated
 

@@ -80,6 +80,8 @@ class TestFindProvider:
         assert cfg.api_protocol == "openai-completions"
         assert cfg.auth_env == "OPENROUTER_API_KEY"
         assert cfg.base_url == "https://openrouter.ai/api/v1"
+        assert cfg.endpoints["openai-responses"] == "https://openrouter.ai/api/v1"
+        assert cfg.endpoints["anthropic-messages"] == "https://openrouter.ai/api"
         assert (
             resolve_auth_env("openrouter/qwen/qwen3.5-397b-a17b")
             == "OPENROUTER_API_KEY"
