@@ -147,9 +147,11 @@ class ACPClient:
             # from echoed requests when running through a PTY)
             if "id" in msg and msg["id"] == request_id and "method" not in msg:
                 if msg.get("error"):
+                    error = msg["error"]
                     raise ACPError(
-                        msg["error"].get("code", -1),
-                        msg["error"].get("message", "Unknown error"),
+                        error.get("code", -1),
+                        error.get("message", "Unknown error"),
+                        error.get("data"),
                     )
                 return msg.get("result", {})
 
@@ -426,7 +428,19 @@ class ACPClient:
 class ACPError(AgentProtocolError):
     """Error from ACP agent."""
 
-    def __init__(self, code: int, message: str):
+    def __init__(self, code: int, message: str, data: Any | None = None):
         self.code = code
         self.message = message
+        self.data = data
         super().__init__(f"ACP error {code}: {message}")
+
+    @property
+    def detail_message(self) -> str:
+        """Return the most specific agent-provided diagnostic message."""
+        if isinstance(self.data, dict):
+            message = self.data.get("message")
+            if isinstance(message, str) and message:
+                return message
+        if isinstance(self.data, str) and self.data:
+            return self.data
+        return self.message

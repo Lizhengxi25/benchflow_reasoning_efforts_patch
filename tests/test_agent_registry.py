@@ -47,6 +47,7 @@ class TestEnvMappingField:
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "OPENAI_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "OPENAI_API_KEY"
         assert "openai_base_url=$OPENAI_BASE_URL" in cfg.launch_cmd
+        assert "sandbox_mode=workspace-write" in cfg.launch_cmd
         assert cfg.model_selection_at_launch is True
         assert cfg.reasoning_effort_at_launch is True
         assert cfg.disallow_web_tools_launch_suffix == ""

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from benchflow.acp.runtime import _apply_launch_owned_agent_config
+from benchflow.agents.registry import AGENTS
 
 
 def _profile() -> dict:
@@ -32,6 +33,20 @@ def test_codex_native_model_and_reasoning_are_launch_overrides():
     assert launch == "codex-acp -c model=gpt-5.5 -c model_reasoning_effort=xhigh"
 
 
+def test_gpt55_launch_preserves_workspace_write_and_adds_model_and_reasoning():
+    launch = _apply_launch_owned_agent_config(
+        agent="codex-acp",
+        agent_launch=AGENTS["codex-acp"].launch_cmd,
+        agent_env={},
+        model="gpt-5.5",
+        reasoning_effort="xhigh",
+    )
+
+    assert "-c sandbox_mode=workspace-write" in launch
+    assert launch.endswith("-c model=gpt-5.5 -c model_reasoning_effort=xhigh")
+    assert "tools.web_search=false" not in launch
+
+
 def test_codex_openrouter_profile_materializes_alias_catalog_and_context():
     env = {
         "CODEX_CONFIG": json.dumps({"model": "benchflow-openrouter-z-ai-glm-5.2"}),
@@ -52,6 +67,9 @@ def test_codex_openrouter_profile_materializes_alias_catalog_and_context():
     assert "-c model_reasoning_effort=high" in launch
     assert "-c model_context_window=1048576" in launch
     assert "-c sandbox_mode=danger-full-access" in launch
+    assert launch.rfind("sandbox_mode=danger-full-access") > launch.rfind(
+        "sandbox_mode=workspace-write"
+    )
     assert 'model_catalog_json="$h/.codex/benchflow-model-catalog.json"' in launch
 
     catalog = json.loads(env["BENCHFLOW_CODEX_MODEL_CATALOG_JSON"])

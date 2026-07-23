@@ -94,6 +94,8 @@ class RolloutResult:
         price_source: Pricing table version used for cost_usd, or None.
         usage_details: Optional source-specific telemetry details.
         error:        Error description string, or None on success.
+        error_data:   Structured diagnostic data supplied by the failing ACP
+                      agent, or None when unavailable/not an ACP error.
         error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
                       or was not reached. Separate from ``error`` (agent errors).
@@ -144,6 +146,7 @@ class RolloutResult:
         price_source: str | None = None,
         usage_details: dict[str, Any] | None = None,
         error: str | None = None,
+        error_data: Any | None = None,
         error_category: str | None = None,
         verifier_error: str | None = None,
         verifier_error_category: str | None = None,
@@ -176,6 +179,7 @@ class RolloutResult:
         self.price_source = price_source
         self.usage_details = usage_details
         self.error = error
+        self.error_data = error_data
         self.error_category = error_category
         self.verifier_error = verifier_error
         self.verifier_error_category = verifier_error_category

@@ -702,6 +702,7 @@ class Rollout:
         self._rewards: dict | None = None
         self._verifier_error: str | None = None
         self._error: str | None = None
+        self._error_data: Any | None = None
         # Populated by _export_generated_skills() on failure (#389 follow-up).
         # Kept separate from self._error so classify_error() does not mis-tag
         # an export-time infra failure ("connection lost") as the agent's own
@@ -2046,6 +2047,7 @@ class Rollout:
             # error lives in the usage-proxy trajectory, which Daytona's
             # SandboxUsageProxy only imports on stop() (#546/#564).
             pending_acp_error = e
+            self._error_data = getattr(e, "data", None)
             # Set a provisional error so cleanup()'s
             # _enforce_required_usage_tracking guard early-returns instead of
             # logging a misleading "no provider token usage was captured"
@@ -2289,7 +2291,7 @@ class Rollout:
         # The base AgentProtocolError only annotates `message: str` without
         # assigning it, so a base instance has no `.message` (AttributeError
         # risk); ACPError subclasses do set it. Fall back to str(e) defensively.
-        message = getattr(e, "message", str(e))
+        message = getattr(e, "detail_message", getattr(e, "message", str(e)))
         if "Invalid API key" in message:
             from benchflow.agents.env import check_subscription_auth
             from benchflow.agents.registry import infer_env_key_for_model
@@ -2496,6 +2498,7 @@ class Rollout:
             n_tool_calls=self._n_tool_calls,
             prompts=prompts,
             error=self._error,
+            error_data=getattr(self, "_error_data", None),
             verifier_error=self._verifier_error,
             export_error=self._export_error,
             trajectory=self._trajectory,

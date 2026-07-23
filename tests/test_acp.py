@@ -142,6 +142,43 @@ class TestACPClient:
             await client.close()
 
     @pytest.mark.asyncio
+    async def test_error_response_preserves_structured_data(self) -> None:
+        transport = AsyncMock()
+        transport.receive.return_value = {
+            "jsonrpc": "2.0",
+            "id": 100001,
+            "error": {
+                "code": -32603,
+                "message": "Internal error",
+                "data": {
+                    "message": "Provider overloaded",
+                    "codex_error_info": "other",
+                },
+            },
+        }
+        client = ACPClient(transport)
+
+        with pytest.raises(ACPError) as exc_info:
+            await client._read_until_response(100001)
+
+        error = exc_info.value
+        assert error.code == -32603
+        assert error.message == "Internal error"
+        assert error.data == {
+            "message": "Provider overloaded",
+            "codex_error_info": "other",
+        }
+        assert error.detail_message == "Provider overloaded"
+        assert str(error) == "ACP error -32603: Internal error"
+
+    def test_acp_error_constructor_remains_backwards_compatible(self) -> None:
+        error = ACPError(400, "Bad request")
+
+        assert error.data is None
+        assert error.detail_message == "Bad request"
+        assert str(error) == "ACP error 400: Bad request"
+
+    @pytest.mark.asyncio
     async def test_initialize_advertises_auth_methods(self) -> None:
         """initialize() surfaces the agent's advertised ACP auth methods."""
         client = ACPClient(StdioTransport(sys.executable, [MOCK_AGENT]))
@@ -467,6 +504,7 @@ class TestTransportProtocolFiltering:
                 b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n',
             ]
         )
+        fake_process.read_stderr = AsyncMock(return_value=b"")
         agent_log = tmp_path / "agent.log"
         transport = ContainerTransport(
             container_process=fake_process,
@@ -494,6 +532,7 @@ class TestTransportProtocolFiltering:
         fake_process.readline = AsyncMock(
             return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
         )
+        fake_process.read_stderr = AsyncMock(return_value=b"")
         agent_log = tmp_path / "agent" / "gemini.txt"
         transport = ContainerTransport(
             container_process=fake_process,
@@ -533,6 +572,7 @@ class TestTransportProtocolFiltering:
                 b'{"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n',
             ]
         )
+        first_process.read_stderr = AsyncMock(return_value=b"")
         first = ContainerTransport(
             container_process=first_process,
             command="agent acp",
@@ -549,6 +589,7 @@ class TestTransportProtocolFiltering:
         second_process.readline = AsyncMock(
             return_value=b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n'
         )
+        second_process.read_stderr = AsyncMock(return_value=b"")
         second = ContainerTransport(
             container_process=second_process,
             command="agent acp",
@@ -594,6 +635,7 @@ class TestTransportProtocolFiltering:
                 b'{"jsonrpc": "2.0", "id": 2, "result": {"ok": true}}\n',
             ]
         )
+        fake_process.read_stderr = AsyncMock(return_value=b"")
         agent_log = tmp_path / "agent.log"
         transport = ContainerTransport(
             container_process=fake_process,
@@ -611,6 +653,137 @@ class TestTransportProtocolFiltering:
         assert '{"id": 2, "level": "info", "message": "startup"}' in (
             agent_log.read_text()
         )
+
+
+class TestContainerTransportStderrCapture:
+    """Container agent stderr is drained concurrently and persisted separately."""
+
+    @pytest.mark.asyncio
+    async def test_large_stderr_does_not_block_json_rpc(self, tmp_path) -> None:
+        from benchflow.sandbox.process import LiveProcess
+
+        stderr_size = 1024 * 1024
+        stderr_tail = b"\nprovider-status=429\n"
+        script = (
+            "import sys\n"
+            f"sys.stderr.buffer.write(b'x' * {stderr_size} + {stderr_tail!r})\n"
+            "sys.stderr.buffer.flush()\n"
+            'sys.stdout.write(\'{"jsonrpc":"2.0","id":7,"result":{"ok":true}}\\n\')\n'
+            "sys.stdout.flush()\n"
+            "sys.stdin.buffer.read(1)\n"
+        )
+
+        class LocalProcess(LiveProcess):
+            async def start(self, command, env=None, cwd=None) -> None:
+                self._reset_stderr_tail()
+                self._process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-c",
+                    script,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+        agent_log = tmp_path / "codex_acp.txt"
+        transport = ContainerTransport(
+            container_process=LocalProcess(),
+            command="ignored-by-local-test-process",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            message = await asyncio.wait_for(transport.receive(), timeout=5)
+        finally:
+            await transport.close()
+
+        assert message == {"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}
+        assert (tmp_path / "codex_acp.stderr.txt").read_bytes() == (
+            b"x" * stderr_size + stderr_tail
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_waits_for_stderr_tail(self, tmp_path) -> None:
+        class ClosingTailProcess:
+            def __init__(self) -> None:
+                self.read_count = 0
+                self.waiting_for_close = asyncio.Event()
+                self.close_started = asyncio.Event()
+
+            async def start(self, command, env=None, cwd=None) -> None:
+                return None
+
+            async def read_stderr(self) -> bytes:
+                self.read_count += 1
+                if self.read_count == 1:
+                    return b"before-close\n"
+                if self.read_count == 2:
+                    self.waiting_for_close.set()
+                    await self.close_started.wait()
+                    return b"tail-without-newline"
+                return b""
+
+            async def close(self) -> None:
+                self.close_started.set()
+
+        process = ClosingTailProcess()
+        agent_log = tmp_path / "agent.log"
+        transport = ContainerTransport(
+            container_process=process,
+            command="agent acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        await asyncio.wait_for(process.waiting_for_close.wait(), timeout=5)
+        assert (tmp_path / "agent.stderr.log").read_bytes() == b"before-close\n"
+
+        await asyncio.wait_for(transport.close(), timeout=5)
+
+        assert (tmp_path / "agent.stderr.log").read_bytes() == (
+            b"before-close\ntail-without-newline"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_failure_cancels_stderr_drain(self, tmp_path) -> None:
+        class FailingCloseProcess:
+            def __init__(self) -> None:
+                self.drain_started = asyncio.Event()
+                self.drain_cancelled = asyncio.Event()
+
+            async def start(self, command, env=None, cwd=None) -> None:
+                return None
+
+            async def read_stderr(self) -> bytes:
+                self.drain_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.drain_cancelled.set()
+                    raise
+                return b""
+
+            async def close(self) -> None:
+                raise RuntimeError("close failed")
+
+        process = FailingCloseProcess()
+        transport = ContainerTransport(
+            container_process=process,
+            command="agent acp",
+            agent_log_path=tmp_path / "agent.log",
+        )
+
+        await transport.start()
+        await asyncio.wait_for(process.drain_started.wait(), timeout=5)
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            await asyncio.wait_for(transport.close(), timeout=5)
+
+        assert process.drain_cancelled.is_set()
+        assert transport._stderr_task is None
+        assert transport._agent_log_file is None
+        assert transport._agent_stderr_log_file is None
 
 
 class TestACPInterleaving:
@@ -1560,13 +1733,9 @@ class TestTransportErrorDiagnostics:
                 self.returncode = 255
                 self.pid = 4242
                 self.stdout = self
-                self.stderr = self
 
             async def readline(self) -> bytes:
                 return b""
-
-            async def read(self, _n: int) -> bytes:
-                return b"Connection to sandbox lost"
 
         class _LP(LiveProcess):
             async def start(
@@ -1576,6 +1745,9 @@ class TestTransportErrorDiagnostics:
 
         lp = _LP()
         lp._process = _StubProcess()  # type: ignore[assignment]
+        # ContainerTransport owns the concurrent stderr read and keeps this
+        # bounded tail on LiveProcess for EOF diagnostics.
+        lp._stderr_tail = b"Connection to sandbox lost"
         with pytest.raises(TransportClosedError) as exc_info:
             await lp.readline()
         diag = exc_info.value.diagnostic

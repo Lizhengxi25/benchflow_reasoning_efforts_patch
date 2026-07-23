@@ -715,6 +715,7 @@ async def _continue_run_with_sandbox_proxy(
     except AgentProtocolError as exc:
         pending_acp_error = exc
         rollout._error = str(exc)
+        rollout._error_data = getattr(exc, "data", None)
         logger.error(str(exc))
     except Exception as exc:
         rollout._error = str(exc)

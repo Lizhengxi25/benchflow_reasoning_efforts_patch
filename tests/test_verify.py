@@ -80,6 +80,22 @@ class TestResultJson:
         data = build_result_json()
         assert data["verifier_error"] is None
         assert data["rewards"] == {"reward": 1.0}
+        assert data["error_data"] is None
+
+    def test_acp_error_data_in_json(self, build_result_json):
+        error_data = {
+            "message": "Provider overloaded",
+            "codex_error_info": "other",
+        }
+
+        data = build_result_json(
+            error="ACP error -32603: Internal error",
+            error_data=error_data,
+            rewards=None,
+        )
+
+        assert data["error"] == "ACP error -32603: Internal error"
+        assert data["error_data"] == error_data
 
     def test_no_invented_top_level_scalar_keys(self, build_result_json):
         """Contract: reward/total_tokens/status are nested, never top-level.
@@ -1015,3 +1031,58 @@ class TestScrapedTrajectoryTrust:
         )
         assert result.trajectory_source == "partial_acp"
         assert result.partial_trajectory is True
+
+    @pytest.mark.asyncio
+    async def test_acp_error_data_survives_run_result(self, sdk_run_mocks):
+        from benchflow.acp.client import ACPError
+
+        sdk, mock_env, task_dir = sdk_run_mocks
+        error_data = {
+            "message": "Provider overloaded",
+            "codex_error_info": "other",
+        }
+        mock_session = MagicMock()
+        mock_session.tool_calls = []
+        mock_acp = AsyncMock()
+        mock_acp.session = mock_session
+        mock_acp.close = AsyncMock()
+
+        with self._patch_sdk_run(
+            sdk,
+            mock_env,
+            [
+                patch(
+                    "benchflow.rollout._capture_session_trajectory",
+                    return_value=[],
+                ),
+                patch(
+                    "benchflow.rollout._scrape_agent_trajectory",
+                    new_callable=AsyncMock,
+                    return_value=[],
+                ),
+            ],
+        ) as planes:
+            planes.connect_acp.return_value = (
+                mock_acp,
+                mock_session,
+                MagicMock(),
+                "test-agent",
+            )
+            planes.execute_prompts.side_effect = ACPError(
+                -32603,
+                "Internal error",
+                error_data,
+            )
+            result = await sdk.run(
+                task_dir,
+                agent="test-agent",
+                agent_env={"TEST": "1"},
+                sandbox_user=None,
+                jobs_dir=task_dir.parent / "jobs",
+            )
+
+        assert result.error == "ACP error -32603: Internal error"
+        assert result.error_data == error_data
+        result_path = next((task_dir.parent / "jobs").rglob("result.json"))
+        persisted = json.loads(result_path.read_text())
+        assert persisted["error_data"] == error_data

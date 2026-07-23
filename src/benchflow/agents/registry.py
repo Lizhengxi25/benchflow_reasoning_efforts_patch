@@ -638,7 +638,9 @@ AGENTS: dict[str, AgentConfig] = {
             '> "$h/.codex/benchflow-model-catalog.json"; '
             "fi; exec "
             + _js_agent_launch(
-                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+                "codex-acp",
+                "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL} "
+                "-c sandbox_mode=workspace-write",
             )
         ),
         protocol="acp",
