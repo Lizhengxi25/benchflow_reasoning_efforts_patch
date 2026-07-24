@@ -141,18 +141,15 @@ def test_env_entry_registers_when_set(tmp_path: Path, monkeypatch):
 
 
 def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
-    # Additive/compatible: a manifest reproducing an existing core agent overrides
-    # it, taking DATA fields from the manifest but the host-side _SHIM_ONLY fields
-    # (which the data-only manifest can't carry) from the existing core entry — so
-    # the merged config equals the original.
+    """Guards commit 1dc12903's core/manifest parity contract during registration."""
     _put(
         tmp_path, "demo", "demo", extra='aliases = ["demo-code"]\n'
     )  # manifest: install_cmd="echo install", shim defaults
     m = _maps()
     m["agents"]["demo"] = AgentConfig(
         name="demo",
-        install_cmd="CORE-INSTALL",
-        launch_cmd="CORE-LAUNCH",
+        install_cmd="echo install",
+        launch_cmd="echo launch",
         acp_model_config_id="model",  # a _SHIM_ONLY field core owns
     )
     m["aliases"]["demo-code"] = "demo"
@@ -162,6 +159,29 @@ def test_merge_shim_only_keeps_core_shim_fields(tmp_path: Path):
     assert merged.acp_model_config_id == "model"  # _SHIM_ONLY preserved from core
     assert m["installers"]["demo"] == "echo install"
     assert m["aliases"]["demo-code"] == "demo"
+
+
+def test_merge_shim_only_rejects_runtime_drift_before_mutation(tmp_path: Path):
+    """Guards commit 1dc12903 against mixing stale manifests with newer shims."""
+    _put(tmp_path, "demo", "demo")
+    m = _maps()
+    core = AgentConfig(
+        name="demo",
+        install_cmd="CORE-INSTALL",
+        launch_cmd="echo launch",
+        prefer_acp_set_model=True,
+    )
+    m["agents"]["demo"] = core
+    m["installers"]["demo"] = "CORE-INSTALL"
+
+    with pytest.raises(AgentManifestError, match=r"demo.*install_cmd"):
+        register_manifest_agents(
+            load_agents_from_dir(tmp_path), **m, merge_shim_only=True
+        )
+
+    assert m["agents"]["demo"] is core
+    assert m["installers"]["demo"] == "CORE-INSTALL"
+    assert m["launch"] == {}
 
 
 def test_merge_shim_only_adds_new_agent_without_core_entry(tmp_path: Path):

@@ -17,8 +17,9 @@ Authoring vs. consuming, on purpose:
   added in a later minor still loads on this v1 loader (SemVer: a minor bump is a
   backward-compatible addition). The AgentConfig fields outside the contract are
   the shim/credential set (session_factory, credential_files, subscription_auth,
-  acp_model_config_id, acp_effort_config_id, disallow_web_tools_*); they keep
-  their AgentConfig defaults because they are logic the shim owns, not data
+  prefer_acp_set_model, acp_model_config_id, acp_effort_config_id,
+  disallow_web_tools_*); they keep their AgentConfig defaults because they are
+  logic the shim owns, not data
   (see _SHIM_ONLY and the partition test).
 """
 
@@ -28,7 +29,7 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from benchflow.agents.registry import AgentConfig
@@ -86,6 +87,9 @@ _SHIM_ONLY = frozenset(
         "subscription_auth",
         "model_selection_at_launch",
         "reasoning_effort_at_launch",
+        # Compatibility policy for pinned ACP implementations, not portable
+        # manifest data. Core preserves it when a manifest overrides an agent.
+        "prefer_acp_set_model",
         "acp_model_config_id",
         "acp_effort_config_id",
         "disallow_web_tools_setup_cmd",
@@ -254,10 +258,12 @@ def register_manifest_agents(
 
     ``merge_shim_only=True`` is the additive/compatible mode (used by the
     BENCHFLOW_AGENTS_DIR loader): a manifest reproducing an existing core agent
-    intentionally overrides that agent's config, but its _SHIM_ONLY fields are
+    must match every manifest-owned data field. Its _SHIM_ONLY fields are then
     taken from the core entry (which the data-only manifest can't carry), so the
-    merged config equals the original. Alias collisions still fail loud because
-    remapping another agent's alias is not part of the compatibility shim."""
+    merged config equals the original. Drift fails before any registry map is
+    mutated; otherwise an old install command can be paired with a newer,
+    incompatible core shim. Alias collisions still fail loud because remapping
+    another agent's alias is not part of the compatibility shim."""
     if not override:
         incoming_names = set(loaded)
         seen_aliases: dict[str, str] = {}
@@ -302,6 +308,23 @@ def register_manifest_agents(
                         "agent name in the same batch"
                     )
                 seen_aliases[alias] = name
+    if merge_shim_only:
+        for name, lm in loaded.items():
+            core_config = agents.get(name)
+            if core_config is None:
+                continue
+            merged = _merge_core_shim_only(lm.config, core_config)
+            if merged != core_config:
+                drifted = [
+                    field.name
+                    for field in fields(core_config)
+                    if getattr(merged, field.name) != getattr(core_config, field.name)
+                ]
+                raise AgentManifestError(
+                    f"manifest {name!r} drifts from its core AgentConfig in "
+                    f"manifest-owned fields: {', '.join(drifted)}; reconcile the "
+                    "manifest before enabling BENCHFLOW_AGENTS_DIR"
+                )
     for name, lm in loaded.items():
         config = lm.config
         if merge_shim_only and name in agents:

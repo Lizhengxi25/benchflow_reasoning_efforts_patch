@@ -120,6 +120,40 @@ def _policy_home_dirs(agent: str, agent_cfg: AgentConfig) -> list[str]:
     return sorted(dirs)
 
 
+def _skill_catalog_pipeline(path: str) -> str:
+    """Render a read-only, comma-delimited skill catalog probe."""
+    q_path = shlex.quote(path)
+    return (
+        f"find -L {q_path} -mindepth 2 -maxdepth 2 -type f -name SKILL.md "
+        "-printf '%h\\n' 2>/dev/null | sed 's#.*/##' | LC_ALL=C sort -u "
+        "| tr '\\n' ',' | sed 's/,$//'"
+    )
+
+
+def _skill_catalog_diagnostic_cmd(
+    source: str,
+    destinations: Sequence[str],
+    expected: Sequence[str],
+) -> str:
+    """Render the post-failure catalog probe included in fidelity errors."""
+    parts = [
+        f"printf 'expected_catalog=%s\\n' {shlex.quote(','.join(expected))}",
+        f'source_catalog="$({_skill_catalog_pipeline(source)})"',
+        "printf 'source_catalog=%s\\n' \"$source_catalog\"",
+    ]
+    for destination in destinations:
+        parts.extend(
+            [
+                f'actual_catalog="$({_skill_catalog_pipeline(destination)})"',
+                (
+                    "printf 'actual_catalog[%s]=%s\\n' "
+                    f'{shlex.quote(destination)} "$actual_catalog"'
+                ),
+            ]
+        )
+    return " && ".join(parts)
+
+
 async def _link_skill_paths(
     env,
     source: str,
@@ -136,11 +170,13 @@ async def _link_skill_paths(
             raise ValueError(f"skill_path {sp!r} must start with $HOME/ or $WORKSPACE/")
 
     parts = []
+    expanded_paths: list[str] = []
     expected = tuple(sorted(set(expected_skill_names)))
     expected_text = "\n".join(expected)
     for sp in skill_paths:
         prefix = home if sp.startswith("$HOME/") else cwd
         expanded = sp.replace("$HOME", home).replace("$WORKSPACE", cwd)
+        expanded_paths.append(expanded)
         leaf = expanded if source == expanded else str(Path(expanded).parent)
         chain = _intermediate_dirs(prefix, leaf) if sandbox_user else []
         parts.append(_skill_link_cmd(source, expanded, sandbox_user, chain))
@@ -174,6 +210,39 @@ async def _link_skill_paths(
             if stderr:
                 details.append(f"stderr: {stderr}")
             if expected:
+                # The validation command intentionally stays compact and
+                # fail-closed. On failure, make one read-only probe so the
+                # persisted error identifies whether the wrong image populated
+                # /skills or a discovery link exposed a different catalog.
+                diagnostic_fallback = (
+                    f"expected_catalog={','.join(expected)}\n"
+                    "source_catalog=<unavailable>\n"
+                    "actual_catalog=<unavailable>"
+                )
+                try:
+                    diagnostic = await env.exec(
+                        _skill_catalog_diagnostic_cmd(source, expanded_paths, expected),
+                        timeout_sec=15,
+                    )
+                    diagnostic_stdout = (
+                        getattr(diagnostic, "stdout", "") or ""
+                    ).strip()
+                    diagnostic_stderr = (
+                        getattr(diagnostic, "stderr", "") or ""
+                    ).strip()
+                    details.append(
+                        "catalogs: " + (diagnostic_stdout or diagnostic_fallback)
+                    )
+                    if diagnostic_stderr:
+                        details.append(
+                            f"catalog diagnostic stderr: {diagnostic_stderr}"
+                        )
+                except Exception as exc:
+                    # Preserve the original fidelity failure if the best-effort
+                    # diagnostic itself cannot execute.
+                    details.append(
+                        f"catalogs: {diagnostic_fallback}; diagnostic_error={exc}"
+                    )
                 raise RuntimeError(
                     "experiment_fidelity/skill_deployment_missing: "
                     f"expected={','.join(expected)}; {'; '.join(details)}"

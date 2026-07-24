@@ -18,6 +18,7 @@ from benchflow.agents.registry import (
     AGENT_INSTALLERS,
     AGENT_LAUNCH,
     AGENTS,
+    _claude_bash_prefetch_patch_js,
     register_agent,
 )
 
@@ -30,10 +31,79 @@ class TestEnvMappingField:
         assert "BENCHFLOW_PROVIDER_BASE_URL" in cfg.env_mapping
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_BASE_URL"] == "ANTHROPIC_BASE_URL"
         assert cfg.env_mapping["BENCHFLOW_PROVIDER_API_KEY"] == "ANTHROPIC_AUTH_TOKEN"
-        assert cfg.supports_acp_set_model is False
-        assert cfg.acp_model_config_id == "model"
-        assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.40.0" in cfg.install_cmd
+        assert cfg.skill_paths == [
+            "$HOME/.claude/skills",
+            "$WORKSPACE/.claude/skills",
+        ]
+        assert cfg.supports_acp_set_model is True
+        assert cfg.prefer_acp_set_model is True
+        assert cfg.acp_model_config_id == ""
+        assert cfg.acp_effort_config_id == ""
+        assert "670fb18728514c367cf600925c475bb2bd123914.tar.gz" in cfg.install_cmd
+
+    def test_claude_agent_pins_and_launches_v11_claude_code(self):
+        """Guards SkillsBench 7dcfb802 and Zed 670fb187's matching runtime."""
+        cfg = AGENTS["claude-agent-acp"]
+        source_root = "/opt/benchflow/claude-code-acp"
+        sdk_root = f"{source_root}/node_modules/@anthropic-ai/claude-agent-sdk"
+        executable = f"{sdk_root}/cli.js"
+
+        assert "npm install -g" not in cfg.install_cmd
+        assert "npm ci --no-audit --no-fund" in cfg.install_cmd
+        assert "npm run build" in cfg.install_cmd
+        assert f'require("{source_root}/package.json").version' in cfg.install_cmd
+        assert f'require("{sdk_root}/package.json").version' in cfg.install_cmd
+        assert (
+            f'require("{sdk_root}/package.json").claudeCodeVersion' in cfg.install_cmd
+        )
+        assert "BenchFlow Claude ACP version: %s" in cfg.install_cmd
+        assert "BenchFlow Claude Agent SDK version: %s" in cfg.install_cmd
+        assert "BenchFlow Claude Code version: %s" in cfg.install_cmd
+        assert 'test "$adapter_version" = 0.13.1' in cfg.install_cmd
+        assert 'test "$sdk_version" = 0.2.19' in cfg.install_cmd
+        assert 'test "$claude_version" = 2.1.19' in cfg.install_cmd
+        assert f"[ -f {executable} ]" in cfg.install_cmd
+        assert 'if(lK("tengu_bash_haiku_prefetch",!0)){' in cfg.install_cmd
+        assert "unexpected Claude prefetch signature count" in cfg.install_cmd
+        assert "BenchFlow Claude Bash auxiliary prefetch: disabled" in cfg.install_cmd
+        assert (
+            'if(!1&&lK("tengu_bash_haiku_prefetch",!0)){'
+            in _claude_bash_prefetch_patch_js()
+        )
+        assert f"'export CLAUDE_CODE_EXECUTABLE={executable}'" in cfg.install_cmd
+        assert (
+            "'exec /opt/benchflow/node/bin/node "
+            '/opt/benchflow/claude-code-acp/dist/index.js "$@"\'' in cfg.install_cmd
+        )
+        assert cfg.launch_cmd == "/opt/benchflow/bin/claude-agent-acp"
+
+    def test_claude_prefetch_patch_is_exactly_once_and_fail_closed(self, tmp_path):
+        """Guards Claude Code 2.1.19 at Zed 670fb187 against background LLM calls."""
+        executable = tmp_path / "cli.js"
+        enabled = 'if(lK("tengu_bash_haiku_prefetch",!0)){'
+        executable.write_text(f"before;{enabled}work();}}after")
+        script = _claude_bash_prefetch_patch_js(str(executable))
+
+        first = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        second = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert first.returncode == 0, first.stderr
+        assert (
+            'if(!1&&lK("tengu_bash_haiku_prefetch",!0)){work();}'
+            in executable.read_text()
+        )
+        assert second.returncode != 0
+        assert "unexpected Claude prefetch signature count" in second.stderr
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -153,7 +223,7 @@ class TestOpenHandsConfig:
             "--overrides /tmp/oh-sdk-overrides.txt "
             "--from "
             "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-            "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
+            "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
@@ -161,12 +231,14 @@ class TestOpenHandsConfig:
         assert "command -v git" in cfg.install_cmd
         assert "install.openhands.dev/install.sh" not in cfg.install_cmd
 
-    def test_openhands_install_cmd_pins_matching_long_run_sdk(self):
-        """Guards PR #921 against restoring the unstable 1.22.1 ACP runtime."""
+    def test_openhands_install_cmd_pins_first_party_dependency_closure(self):
+        """Guards the BenchFlow v0.6.3 commit 99baefb6 runtime closure."""
         cfg = AGENTS["openhands"]
 
-        assert "openhands-sdk==1.28.1" in cfg.install_cmd
-        assert "openhands-tools==1.28.1" in cfg.install_cmd
+        assert "openhands-sdk==1.22.1" in cfg.install_cmd
+        assert "openhands-tools==1.22.1" in cfg.install_cmd
+        assert "openhands-workspace==1.11.1" in cfg.install_cmd
+        assert "openhands-agent-server==1.9.1" in cfg.install_cmd
         assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
         assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
 

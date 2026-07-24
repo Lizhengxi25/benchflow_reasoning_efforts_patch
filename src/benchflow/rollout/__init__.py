@@ -125,6 +125,12 @@ from benchflow.rollout._setup import (
 from benchflow.rollout._setup import _apply_prompt_prefix as _apply_prompt_prefix
 from benchflow.rollout._setup import _apply_web_policy as _apply_web_policy
 from benchflow.rollout._setup import (
+    _clear_no_skill_agent_skill_paths as _clear_no_skill_agent_skill_paths,
+)
+from benchflow.rollout._setup import (
+    _clear_no_skill_skill_roots as _clear_no_skill_skill_roots,
+)
+from benchflow.rollout._setup import (
     _configured_task_workdir as _configured_task_workdir,
 )
 from benchflow.rollout._setup import (
@@ -1041,6 +1047,23 @@ class Rollout:
 
         await _run_environment_setup_commands(self._env, self._task)
 
+        if (
+            self._task_skill_policy is not None
+            and self._task_skill_policy.mode == SKILL_MODE_NO_SKILL
+        ):
+            # Base images are allowed to carry reusable agent tooling, but a
+            # no-skill experiment must not inherit their global skill catalog.
+            # Reset it after task setup and before any agent/user home exists.
+            self._agent_cwd = await _resolve_agent_cwd(self._env, self._task)
+            environment_config = getattr(
+                getattr(self._task, "config", None), "environment", None
+            )
+            await _clear_no_skill_skill_roots(
+                self._env,
+                getattr(environment_config, "skills_dir", None),
+                workspace=self._agent_cwd,
+            )
+
         self._phase = "started"
 
     # Phase 3: INSTALL AGENT
@@ -1174,6 +1197,27 @@ class Rollout:
             return cfg.session_factory
         return None
 
+    async def _enforce_no_skill_agent_discovery(
+        self,
+        agent_name: str,
+        agent_cfg: Any | None,
+    ) -> None:
+        """Clear the selected agent's discovery roots immediately before connect."""
+
+        skill_policy = getattr(self, "_task_skill_policy", None)
+        if skill_policy is None or skill_policy.mode != SKILL_MODE_NO_SKILL:
+            return
+        # ``skip_agent_install`` leaves the cached config unset.  The registry
+        # remains authoritative for built-in agents and must still supply their
+        # real discovery paths to the no-skill fidelity gate.
+        effective_cfg = agent_cfg or self._planes.agent_config(agent_name)
+        await _clear_no_skill_agent_skill_paths(
+            self._env,
+            effective_cfg,
+            sandbox_user=self._config.sandbox_user,
+            workspace=self._agent_cwd,
+        )
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         cfg = self._config
@@ -1196,6 +1240,10 @@ class Rollout:
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
             capture_model_io=cfg.capture_model_io,
+        )
+        await self._enforce_no_skill_agent_discovery(
+            cfg.primary_agent,
+            getattr(self, "_agent_cfg", None),
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -2274,6 +2322,7 @@ class Rollout:
 
         self._agent_launch = agent_launch
 
+        await self._enforce_no_skill_agent_discovery(role.agent, agent_cfg)
         sf_entrypoint = self._session_factory_entrypoint(role.agent)
         self._is_session_factory = sf_entrypoint is not None
         if sf_entrypoint is not None:

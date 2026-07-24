@@ -110,6 +110,22 @@ _BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
 _BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
 _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 
+# SkillsBench v1.1 used Claude Code 2.1.19. Zed's immutable source revision
+# below is the adapter commit that natively depends on SDK 0.2.19, whose bundled
+# Claude Code is exactly 2.1.19. No npm release contains this exact combination:
+# mixing a newer adapter/SDK with the old CLI can emit the final text but never
+# close session/prompt, so build the matching source revision instead.
+_CLAUDE_AGENT_ACP_GIT_REV = "670fb18728514c367cf600925c475bb2bd123914"
+_CLAUDE_AGENT_ACP_VERSION = "0.13.1"
+_CLAUDE_AGENT_SDK_VERSION = "0.2.19"
+_CLAUDE_CODE_VERSION = "2.1.19"
+_CLAUDE_AGENT_ACP_SOURCE = "/opt/benchflow/claude-code-acp"
+_CLAUDE_AGENT_ACP_ENTRY = f"{_CLAUDE_AGENT_ACP_SOURCE}/dist/index.js"
+_CLAUDE_AGENT_SDK_PACKAGE_ROOT = (
+    f"{_CLAUDE_AGENT_ACP_SOURCE}/node_modules/@anthropic-ai/claude-agent-sdk"
+)
+_CLAUDE_CODE_EXECUTABLE = f"{_CLAUDE_AGENT_SDK_PACKAGE_ROOT}/cli.js"
+
 # OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
 # API for the built-in ``openai`` provider id (its ``getModel`` calls
 # ``provider.responses(id)``), which the LiteLLM gateway/DeepSeek cannot serve —
@@ -117,9 +133,16 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
 OPENCODE_PROXY_PROVIDER_ID = "benchflow"
-_OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
-_OPENHANDS_SDK_VERSION = "1.28.1"
-_OPENHANDS_TOOLS_VERSION = "1.28.1"
+# SkillsBench v1.1 runtime lock. Keep the source revision and first-party
+# overrides together: changing only one component creates a different harness.
+# BenchFlow PR #921 later moved SDK/tools to 1.28.1 for long-running ACP,
+# terminal, tool-executor, and event-log stability. This historical pin favors
+# v1.1 comparability; revisit that tradeoff before a large or long-running fleet.
+_OPENHANDS_CLI_GIT_REV = "3ca17446c5d9c1e35e054803478a3501ec251ecf"
+_OPENHANDS_SDK_VERSION = "1.22.1"
+_OPENHANDS_TOOLS_VERSION = "1.22.1"
+_OPENHANDS_WORKSPACE_VERSION = "1.11.1"
+_OPENHANDS_AGENT_SERVER_VERSION = "1.9.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
@@ -200,6 +223,85 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     """Launch a JS agent through its isolated BenchFlow wrapper."""
     cmd = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     return f"{cmd} {args}".rstrip()
+
+
+def _claude_bash_prefetch_patch_js(
+    executable: str = _CLAUDE_CODE_EXECUTABLE,
+) -> str:
+    """Return a fail-closed patch for Claude Code 2.1.19's auxiliary prefetch."""
+    return "\n".join(
+        [
+            'const fs = require("fs");',
+            f"const p = {executable!r};",
+            "const enabled = 'if(lK(\"tengu_bash_haiku_prefetch\",!0)){';",
+            ("const disabled = 'if(!1&&lK(\"tengu_bash_haiku_prefetch\",!0)){';"),
+            'const source = fs.readFileSync(p, "utf8");',
+            "const count = source.split(enabled).length - 1;",
+            (
+                "if (count !== 1 || source.includes(disabled)) "
+                "throw new Error(`unexpected Claude prefetch signature count: ${count}`);"
+            ),
+            "fs.writeFileSync(p, source.replace(enabled, disabled));",
+            'console.log("BenchFlow Claude Bash auxiliary prefetch: disabled");',
+        ]
+    )
+
+
+def _claude_agent_acp_install() -> str:
+    """Build and verify the exact Claude ACP/SDK/CLI combination from v1.1."""
+    node = f"{_BENCHFLOW_NODE_PREFIX}/bin/node"
+    npm = f"{_BENCHFLOW_NODE_PREFIX}/bin/npm"
+    wrapper = f"{_BENCHFLOW_BIN_PREFIX}/claude-agent-acp"
+    adapter_package_json = f"{_CLAUDE_AGENT_ACP_SOURCE}/package.json"
+    sdk_package_json = f"{_CLAUDE_AGENT_SDK_PACKAGE_ROOT}/package.json"
+    archive_url = (
+        "https://github.com/zed-industries/claude-agent-acp/archive/"
+        f"{_CLAUDE_AGENT_ACP_GIT_REV}.tar.gz"
+    )
+    prefetch_patch_js = _claude_bash_prefetch_patch_js()
+    wrapper_lines = (
+        "#!/bin/sh",
+        f"export CLAUDE_CODE_EXECUTABLE={_CLAUDE_CODE_EXECUTABLE}",
+        f'exec {node} {_CLAUDE_AGENT_ACP_ENTRY} "$@"',
+    )
+    wrapper_args = " ".join(shlex.quote(line) for line in wrapper_lines)
+    return (
+        f"{_NODE_INSTALL} && "
+        f"mkdir -p /opt/benchflow {_BENCHFLOW_BIN_PREFIX} && "
+        'tmp="$(mktemp -d)" && '
+        f'curl -fsSL --retry 3 -o "$tmp/claude-code-acp.tar.gz" '
+        f"{archive_url} && "
+        f"rm -rf {_CLAUDE_AGENT_ACP_SOURCE} && "
+        f"mkdir -p {_CLAUDE_AGENT_ACP_SOURCE} && "
+        f'tar -xzf "$tmp/claude-code-acp.tar.gz" '
+        f"-C {_CLAUDE_AGENT_ACP_SOURCE} --strip-components=1 --no-same-owner && "
+        'rm -rf "$tmp" && '
+        f"cd {_CLAUDE_AGENT_ACP_SOURCE} && "
+        f"{npm} ci --no-audit --no-fund && "
+        f"{npm} run build && "
+        f"""adapter_version="$({node} -p 'require("{adapter_package_json}").version')" && """
+        f"""sdk_version="$({node} -p 'require("{sdk_package_json}").version')" && """
+        f"""claude_version="$({node} -p 'require("{sdk_package_json}").claudeCodeVersion')" && """
+        "printf 'BenchFlow Claude ACP version: %s\\n"
+        "BenchFlow Claude Agent SDK version: %s\\n"
+        "BenchFlow Claude Code version: %s\\n' "
+        '"$adapter_version" "$sdk_version" "$claude_version" && '
+        f'test "$adapter_version" = {_CLAUDE_AGENT_ACP_VERSION} && '
+        f'test "$sdk_version" = {_CLAUDE_AGENT_SDK_VERSION} && '
+        f'test "$claude_version" = {_CLAUDE_CODE_VERSION} && '
+        f"[ -f {_CLAUDE_AGENT_ACP_ENTRY} ] && "
+        f"[ -f {_CLAUDE_CODE_EXECUTABLE} ] && "
+        # Claude Code 2.1.19 launches a speculative hard-coded Haiku request
+        # after Bash to extract paths for pre-reading. It is outside the agent
+        # turn and can outlive ACP completion. Patch exactly one pinned-source
+        # signature and fail closed on drift; the evaluated model and Bash tool
+        # behavior are otherwise unchanged.
+        f"{node} -e {shlex.quote(prefetch_patch_js)} && "
+        f"printf '%s\\n' {wrapper_args} > {wrapper} && "
+        f"chmod +x {wrapper} && "
+        f"chmod -R a+rX {_CLAUDE_AGENT_ACP_SOURCE} && "
+        f"[ -x {wrapper} ]"
+    )
 
 
 _MIMO_MANIFEST_INSTALL_CMD = (
@@ -484,6 +586,9 @@ class AgentConfig:
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
     supports_acp_set_model: bool = True
+    # A few older agents advertise a catalog-only "model" option while also
+    # accepting arbitrary provider model IDs through session/set_model.
+    prefer_acp_set_model: bool = False
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
     model_selection_at_launch: bool = False
@@ -521,16 +626,14 @@ AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
-        skill_paths=["$HOME/.claude/skills"],
+        # Claude Code discovers both user-level and project-level skills.
+        # Declaring both also makes no-skill cleanup fail closed if a task image
+        # unexpectedly ships a real project skill directory.
+        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.40.0: the config-option wiring below (set_config_option +
-        # the "model"/"effort" ids) targets this version's ACP protocol (sdk
-        # 0.24, which dropped session/set_model). The option ids are coupled to
-        # this pin — re-verify them when bumping. runtime.py uses
-        # capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install(
-            "claude-agent-acp", "@agentclientprotocol/claude-agent-acp@0.40.0"
-        ),
+        # Adapter, SDK, and bundled Claude Code come from one matching source
+        # revision; changing only the CLI can leave ACP turns unclosed.
+        install_cmd=_claude_agent_acp_install(),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
@@ -556,9 +659,9 @@ AGENTS: dict[str, AgentConfig] = {
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
-        supports_acp_set_model=False,
-        acp_model_config_id="model",
-        acp_effort_config_id="effort",
+        # This historical adapter's set_model endpoint accepts arbitrary
+        # benchmark/provider aliases, unlike its advertised fixed model list.
+        prefer_acp_set_model=True,
     ),
     "pi-acp": AgentConfig(
         name="pi-acp",
@@ -916,13 +1019,13 @@ AGENTS: dict[str, AgentConfig] = {
             "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
             '    export PATH="$HOME/.local/bin:$PATH"; '
             "  fi && "
-            # Pin the OpenHands CLI source and its matching SDK/tools release
-            # together so the ACP runtime cannot drift or be forced onto an
-            # older, API-incompatible SDK. The 1.28.1 line retains the
-            # security_risk default fix and includes later long-run ACP,
-            # terminal, tool-executor, and event-log stability fixes.
+            # Pin the first-party OpenHands closure. In particular, workspace
+            # leaves agent-server unbounded, so omitting the final override
+            # silently changes the harness as new agent-server releases land.
             f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
-            f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
+            f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n"
+            f"openhands-workspace=={_OPENHANDS_WORKSPACE_VERSION}\\n"
+            f"openhands-agent-server=={_OPENHANDS_AGENT_SERVER_VERSION}\\n' "
             "> /tmp/oh-sdk-overrides.txt && "
             "uv tool install --force --refresh "
             "--overrides /tmp/oh-sdk-overrides.txt "
@@ -1191,6 +1294,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
         supports_acp_set_model=config.supports_acp_set_model,
+        prefer_acp_set_model=config.prefer_acp_set_model,
         model_selection_at_launch=config.model_selection_at_launch,
         reasoning_effort_at_launch=config.reasoning_effort_at_launch,
         acp_model_config_id=config.acp_model_config_id,
@@ -1387,6 +1491,7 @@ def register_agent(
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
     supports_acp_set_model: bool = True,
+    prefer_acp_set_model: bool = False,
     model_selection_at_launch: bool = False,
     reasoning_effort_at_launch: bool = False,
     acp_model_config_id: str = "",
@@ -1428,6 +1533,7 @@ def register_agent(
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
         supports_acp_set_model=supports_acp_set_model,
+        prefer_acp_set_model=prefer_acp_set_model,
         model_selection_at_launch=model_selection_at_launch,
         reasoning_effort_at_launch=reasoning_effort_at_launch,
         acp_model_config_id=acp_model_config_id,

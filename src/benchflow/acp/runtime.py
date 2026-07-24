@@ -509,6 +509,11 @@ def _resolve_acp_model_option_id(
     automatically, while a member that does not (e.g. current ``codex-acp``,
     which advertises only ``fast-mode``) keeps using ``session/set_model``.
     """
+    # Explicit legacy preference wins over capability discovery. This is needed
+    # when an agent's advertised option only accepts its built-in catalog but
+    # session/set_model accepts gateway aliases.
+    if getattr(agent_cfg, "prefer_acp_set_model", False):
+        return None
     declared = getattr(agent_cfg, "acp_model_config_id", "") or ""
     if declared:
         return declared

@@ -734,7 +734,7 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
         "uv tool install --force --refresh "
         "--overrides /tmp/oh-sdk-overrides.txt "
         "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-        "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
+        "3ca17446c5d9c1e35e054803478a3501ec251ecf' "
         "openhands --python 3.12" in log_text
     )
     assert "=== stderr ===" in log_text
@@ -879,3 +879,12 @@ def test_agent_kill_pattern_targets_agent_not_python_services(launch, agent_argv
 def test_agent_kill_pattern_empty_launch_is_none():
     assert _agent_process_kill_pattern("") is None
     assert _agent_process_kill_pattern("   ") is None
+
+
+def test_exec_prefixed_launch_kills_the_agent_not_the_shell_builtin():
+    """Guards commit 41468ace's Codex ACP 0.0.45 launcher contract."""
+    pattern = _agent_process_kill_pattern(AGENTS["codex-acp"].launch_cmd)
+
+    assert pattern is not None
+    assert re.search(pattern, "/opt/benchflow/bin/codex-acp")
+    assert not re.search(pattern, "/opt/benchflow/node/bin/node")

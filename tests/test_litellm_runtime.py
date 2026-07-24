@@ -8,7 +8,10 @@ import pytest
 from benchflow.agents.codex_config import CODEX_DEFAULT_AUTH_REQUEST_ENV
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_bedrock_preflight import BedrockPatchPreflightError
-from benchflow.providers.litellm_config import LITELLM_MODEL_ALIAS_ENV
+from benchflow.providers.litellm_config import (
+    LITELLM_MODEL_ALIAS_ENV,
+    LITELLM_MODEL_VIA_ENV,
+)
 from benchflow.providers.runtime import (
     ProviderRuntime,
     ensure_litellm_runtime,
@@ -113,6 +116,7 @@ async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
+    """Guards Zed PR #260's Claude Code 2.1.19 auxiliary-model routing."""
     starts = []
 
     async def fake_start(**kwargs):
@@ -128,6 +132,12 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
             "CLAUDE_CODE_OAUTH_TOKEN": "oauth-code-secret",
             "CLAUDE_OAUTH_TOKEN": "oauth-legacy-secret",
             "_BENCHFLOW_SUBSCRIPTION_AUTH": "1",
+            LITELLM_MODEL_VIA_ENV: "1",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "stale-sonnet",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "stale-opus",
+            "ANTHROPIC_SMALL_FAST_MODEL": "stale-fast",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "stale-subagent",
         },
         model="claude-sonnet-4-6",
         runtime=None,
@@ -139,6 +149,15 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
     assert updated["ANTHROPIC_AUTH_TOKEN"].startswith("sk-benchflow-")
     assert updated["ANTHROPIC_API_KEY"] == ""
     assert updated["ANTHROPIC_MODEL"] == "benchflow-claude-sonnet-4-6"
+    for model_env in (
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ):
+        assert updated[model_env] == updated["ANTHROPIC_MODEL"]
+    assert LITELLM_MODEL_VIA_ENV not in updated
     assert "CLAUDE_CODE_USE_BEDROCK" not in updated
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in updated
     assert "CLAUDE_OAUTH_TOKEN" not in updated

@@ -1300,6 +1300,10 @@ def _wire_litellm_agent_env(
     updated = dict(agent_env)
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    # Recompute model ownership from the selected agent config. Reusing a
+    # caller's stale marker can otherwise suppress session/set_model after an
+    # agent version/profile change.
+    updated.pop(LITELLM_MODEL_VIA_ENV, None)
     # Internal marker used only to decide whether host subscription credentials
     # should be uploaded. A proxy-routed process must not retain a signal that
     # can reactivate native subscription auth.
@@ -1373,8 +1377,23 @@ def _wire_litellm_agent_env(
         # OpenRouter/LiteLLM bearer token. Its documented custom-gateway setup
         # requires ANTHROPIC_API_KEY to be present and empty.
         updated["ANTHROPIC_API_KEY"] = ""
-        updated["ANTHROPIC_MODEL"] = route.model_alias
-        updated[LITELLM_MODEL_VIA_ENV] = "1"
+        # Claude Code 2.1.19 can use role-specific model defaults for auxiliary
+        # and subagent calls. Keep every call on this benchmark's single proxy
+        # alias; an upstream Claude model id is not a registered LiteLLM route.
+        for model_env in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            updated[model_env] = route.model_alias
+        # The v1.1 leaderboard pin ignores ANTHROPIC_MODEL during session
+        # creation, so its registry entry explicitly selects session/set_model.
+        # Newer Claude ACP releases keep the env-owned path.
+        if not (_cfg and _cfg.prefer_acp_set_model):
+            updated[LITELLM_MODEL_VIA_ENV] = "1"
         for key in (
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_SKIP_BEDROCK_AUTH",

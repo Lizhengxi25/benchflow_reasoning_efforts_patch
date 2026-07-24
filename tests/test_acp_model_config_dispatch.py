@@ -151,17 +151,34 @@ async def test_unregistered_agent_with_model_option_uses_config_option(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_registry_hint_overrides_when_session_advertises_nothing(tmp_path):
-    """The registry's acp_model_config_id is honored as an override even when
-    session/new echoes no config options (thin transports), preserving the
-    claude-agent-acp config-option path."""
-    mock_acp = _make_mocks(config_options=[])
+async def test_pinned_claude_prefers_set_model_over_advertised_catalog(tmp_path):
+    """Guards Zed commit 670fb187's provider-alias set_model path."""
+    mock_acp = _make_mocks(config_options=[{"id": "model"}])
     await _connect(
         mock_acp, agent="claude-agent-acp", model="claude-opus-4-8", tmp_path=tmp_path
     )
 
-    mock_acp.set_config_option.assert_awaited_once_with("model", "claude-opus-4-8")
-    mock_acp.set_model.assert_not_awaited()
+    mock_acp.set_config_option.assert_not_awaited()
+    mock_acp.set_model.assert_awaited_once_with("claude-opus-4-8")
+
+
+@pytest.mark.asyncio
+async def test_pinned_claude_sends_litellm_alias_through_set_model(tmp_path):
+    """Guards Zed commit 670fb187 against routing the raw provider model id."""
+    mock_acp = _make_mocks(config_options=[{"id": "model"}])
+    await _connect(
+        mock_acp,
+        agent="claude-agent-acp",
+        model="openrouter/tencent/hy3",
+        tmp_path=tmp_path,
+        agent_env={
+            LITELLM_MODEL_ALIAS_ENV: "benchflow-tencent-hy3",
+            "ANTHROPIC_MODEL": "benchflow-tencent-hy3",
+        },
+    )
+
+    mock_acp.set_config_option.assert_not_awaited()
+    mock_acp.set_model.assert_awaited_once_with("benchflow-tencent-hy3")
 
 
 @pytest.mark.asyncio

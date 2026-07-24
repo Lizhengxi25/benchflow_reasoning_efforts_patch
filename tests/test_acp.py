@@ -1492,15 +1492,12 @@ class TestConnectAcpModelSelection:
         mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_claude_uses_config_options_for_model_and_effort(self, tmp_path):
-        """Guards PR #825 repro: latest claude-agent-acp removed session/set_model."""
+    async def test_pinned_claude_prefers_set_model_over_config_option(self, tmp_path):
+        """Guards Zed 670fb187 / SkillsBench v1.1's provider-alias path."""
         from benchflow.acp.runtime import connect_acp
 
         mock_acp = self._make_mocks()
-        mock_acp.session_new.return_value.config_options = [
-            {"id": "model"},
-            {"id": "effort"},
-        ]
+        mock_acp.session_new.return_value.config_options = [{"id": "model"}]
         mock_env = AsyncMock()
         with (
             patch(
@@ -1520,14 +1517,10 @@ class TestConnectAcpModelSelection:
                 rollout_dir=tmp_path,
                 environment="docker",
                 agent_cwd="/app",
-                reasoning_effort="max",
             )
 
-        mock_acp.set_model.assert_not_awaited()
-        assert mock_acp.set_config_option.await_args_list == [
-            call("model", "claude-opus-4-8"),
-            call("effort", "max"),
-        ]
+        mock_acp.set_model.assert_awaited_once_with("claude-opus-4-8")
+        mock_acp.set_config_option.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_claude_litellm_env_owns_model_selection(self, tmp_path):

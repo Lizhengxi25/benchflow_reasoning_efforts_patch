@@ -72,8 +72,8 @@ async def test_set_model_failure_aborts_rollout(tmp_path) -> None:
     mock_acp.close.assert_awaited()
 
 
-async def test_config_option_failure_aborts_rollout(tmp_path) -> None:
-    """Claude ACP config-option failures must fail closed like set_model."""
+async def test_advertised_config_option_failure_aborts_rollout(tmp_path) -> None:
+    """Guards commit 38d39aa4 (PR #435) for advertised ACP config options."""
     from benchflow.acp.runtime import connect_acp
 
     mock_acp = _stock_acp_mock()
@@ -92,8 +92,8 @@ async def test_config_option_failure_aborts_rollout(tmp_path) -> None:
     ):
         await connect_acp(
             env=mock_env,
-            agent="claude-agent-acp",
-            agent_launch="claude-agent-acp",
+            agent="test-agent",
+            agent_launch="test-agent",
             agent_env={},
             sandbox_user=None,
             model="claude-opus-4-8",

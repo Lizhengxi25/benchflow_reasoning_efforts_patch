@@ -41,12 +41,30 @@ from benchflow.rewards.validation import (
     reward_lenient_from_env,
     validate_reward_map,
 )
+from benchflow.rollout._no_skill_cleanup import build_no_skill_cleanup_cmd
 from benchflow.rollout._results import _DIAG_TRUNCATE
+from benchflow.skill_policy import validate_container_mount_path
 from benchflow.trajectories.types import redact_acp_trajectory_jsonl
 
 logger = logging.getLogger(__name__)
 
 _DISALLOW_WEB_TOOLS_ENV = "BENCHFLOW_DISALLOW_WEB_TOOLS"
+_PROTECTED_SKILL_CLEANUP_ROOTS = tuple(
+    PurePosixPath(path)
+    for path in (
+        "/app",
+        "/workspace",
+        "/home",
+        "/root",
+        "/output",
+        "/outputs",
+        "/oracle",
+        "/solution",
+        "/verifier",
+        "/tests",
+        "/testbed_verify",
+    )
+)
 
 
 def _task_disallows_internet(task: Any) -> bool:
@@ -126,6 +144,9 @@ _GENERIC_INTERPRETERS = (
 )
 # Subcommands consumed by a package runner before the agent binary appears.
 _RUNNER_SUBCOMMANDS = frozenset({"run", "tool", "exec", "x"})
+# Shell control words can be the first token in the final command segment, but
+# they do not identify the process that should be terminated.
+_SHELL_CONTROL_WORDS = frozenset({"command", "exec"})
 # A leading ``FOO=bar`` environment-variable assignment (e.g. harvey-lab's
 # ``HARVEY_LABS_ROOT=/opt/harvey-labs ... python <shim>``).
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
@@ -175,6 +196,8 @@ def _agent_process_kill_pattern(agent_launch: str) -> str | None:
             continue
         basename = PurePosixPath(token).name
         if not basename:
+            continue
+        if basename in _SHELL_CONTROL_WORDS:
             continue
         if _is_generic_interpreter(basename):  # too broad to pkill on
             after_runner = basename in _PACKAGE_RUNNERS
@@ -250,6 +273,181 @@ async def _ensure_sandbox_dir(
         raise RuntimeError(
             f"Failed to create sandbox directory {path}: "
             f"{result.stderr or result.stdout}"
+        )
+
+
+def _no_skill_cleanup_roots(
+    declared_sandbox_dir: str | None,
+    *,
+    workspace: str,
+) -> tuple[str, ...]:
+    """Resolve skill roots that a no-skill rollout may safely reset.
+
+    ``/app/skills`` is deliberately rejected: task workspaces can contain an
+    ordinary directory with that name, and no-skill cleanup must never erase
+    task inputs merely because an environment declared an unsafe skill root.
+    """
+    roots = ["/skills"]
+    if declared_sandbox_dir is not None:
+        declared = validate_container_mount_path(
+            declared_sandbox_dir, "environment.skills_dir"
+        )
+        if declared != "/skills":
+            candidate = PurePosixPath(declared)
+            if "skill" not in candidate.name.lower():
+                raise ValueError(
+                    "experiment_fidelity/unsafe_skill_cleanup_root: "
+                    f"declared skill root {declared!r} must end in a "
+                    "skill-named directory"
+                )
+            roots.append(declared)
+
+    protected = (*_PROTECTED_SKILL_CLEANUP_ROOTS, PurePosixPath(workspace))
+    for root in roots:
+        candidate = PurePosixPath(root)
+        if any(
+            candidate == protected_root
+            or candidate.is_relative_to(protected_root)
+            or protected_root.is_relative_to(candidate)
+            for protected_root in protected
+        ):
+            raise ValueError(
+                "experiment_fidelity/unsafe_skill_cleanup_root: "
+                f"refusing to clear skill root {root!r} overlapping "
+                f"protected workspace/system path {workspace!r}"
+            )
+    return tuple(roots)
+
+
+def _no_skill_agent_discovery_targets(
+    agent_cfg: Any | None,
+    *,
+    sandbox_user: str | None,
+    workspace: str,
+) -> tuple[tuple[str, str, str | None, str], ...]:
+    """Expand the selected agent's declared discovery paths in the sandbox."""
+
+    if agent_cfg is None:
+        return ()
+    home = f"/home/{sandbox_user}" if sandbox_user else "/root"
+    targets: dict[str, tuple[str, str, str | None, str]] = {}
+    for configured in getattr(agent_cfg, "skill_paths", ()):
+        if configured.startswith("$HOME/"):
+            anchor = home
+            expanded = configured.replace("$HOME", home, 1)
+            policy = "reset"
+        elif configured.startswith("$WORKSPACE/"):
+            anchor = workspace
+            expanded = configured.replace("$WORKSPACE", workspace, 1)
+            # A real directory here belongs to the task checkout.  Only a
+            # final discovery symlink may be unlinked without changing task
+            # input; an absent path can remain absent.
+            policy = "unlink-only"
+        else:
+            raise ValueError(
+                "experiment_fidelity/unsafe_skill_cleanup_root: "
+                f"agent skill path {configured!r} must start with "
+                "$HOME/ or $WORKSPACE/"
+            )
+        expanded = validate_container_mount_path(
+            expanded,
+            f"{getattr(agent_cfg, 'name', 'agent')}.skill_paths",
+        )
+        anchor_path = PurePosixPath(anchor)
+        expanded_path = PurePosixPath(expanded)
+        if expanded_path == anchor_path or not expanded_path.is_relative_to(
+            anchor_path
+        ):
+            raise ValueError(
+                "experiment_fidelity/unsafe_skill_cleanup_root: "
+                f"agent skill path {configured!r} escapes {anchor!r}"
+            )
+        current = targets.get(expanded)
+        if current is None or (current[3] == "reset" and policy == "unlink-only"):
+            # If HOME and WORKSPACE collapse to the same path (for example a
+            # root-user task whose cwd is /root), task-data protection wins.
+            targets[expanded] = (expanded, anchor, sandbox_user, policy)
+    return tuple(targets.values())
+
+
+async def _run_no_skill_cleanup(
+    env: Any,
+    targets: tuple[tuple[str, str | None, str | None, str], ...],
+    *,
+    protected_roots: tuple[str, ...] = (),
+) -> None:
+    """Validate and reset skill roots inside the sandbox."""
+
+    if not targets:
+        return
+    command = build_no_skill_cleanup_cmd(
+        targets,
+        protected_roots=protected_roots,
+    )
+    result = await env.exec(command, user="root", timeout_sec=30)
+    return_code = getattr(result, "return_code", getattr(result, "exit_code", 0))
+    if isinstance(return_code, int) and return_code != 0:
+        stdout = (getattr(result, "stdout", "") or "").strip()
+        stderr = (getattr(result, "stderr", "") or "").strip()
+        if (
+            "experiment_fidelity/unsafe_skill_cleanup_root:" in stderr
+            or "experiment_fidelity/no_skill_cleanup_prerequisite:" in stderr
+        ):
+            raise RuntimeError(stderr)
+        raise RuntimeError(
+            "experiment_fidelity/no_skill_catalog_not_empty: "
+            f"exit_code={return_code}; stdout={stdout or '<empty>'}; "
+            f"stderr={stderr or '<empty>'}"
+        )
+    stdout = (getattr(result, "stdout", "") or "").strip()
+    if stdout:
+        logger.info("No-skill fidelity reset: %s", stdout.replace("\n", "; "))
+
+
+async def _clear_no_skill_skill_roots(
+    env: Any,
+    declared_sandbox_dir: str | None,
+    *,
+    workspace: str,
+) -> None:
+    """Remove base-image skill catalogs before a no-skill agent is created."""
+    roots = _no_skill_cleanup_roots(
+        declared_sandbox_dir,
+        workspace=workspace,
+    )
+    targets = tuple((root, None, None, "reset") for root in roots)
+    protected = (
+        *(str(path) for path in _PROTECTED_SKILL_CLEANUP_ROOTS),
+        workspace,
+    )
+    await _run_no_skill_cleanup(
+        env,
+        targets,
+        protected_roots=protected,
+    )
+    logger.info("No-skill fidelity reset cleared skill roots: %s", ", ".join(roots))
+
+
+async def _clear_no_skill_agent_skill_paths(
+    env: Any,
+    agent_cfg: Any | None,
+    *,
+    sandbox_user: str | None,
+    workspace: str,
+) -> None:
+    """Reset and scan the selected agent's effective discovery paths."""
+
+    targets = _no_skill_agent_discovery_targets(
+        agent_cfg,
+        sandbox_user=sandbox_user,
+        workspace=workspace,
+    )
+    await _run_no_skill_cleanup(env, targets)
+    if targets:
+        logger.info(
+            "No-skill fidelity reset cleared %s discovery path(s) for %s",
+            len(targets),
+            getattr(agent_cfg, "name", "agent"),
         )
 
 

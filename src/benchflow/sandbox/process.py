@@ -276,7 +276,11 @@ class DockerProcess(LiveProcess):
         may run the agent in a dedicated attacker container — e.g. a Kali
         service — while keeping target containers separate (#248).
         """
-        project_name = env.session_id.lower().replace(".", "-")
+        # DockerSandbox scopes projects by the resolved environment + rollout
+        # roots, not merely the experiment-local session id. Reuse the exact
+        # project name so ACP enters the intended container when two jobs with
+        # the same session id share one Docker daemon.
+        project_name = env._compose_project_name
         project_dir = str(env.environment_dir.resolve().absolute())
         compose_files = [str(p.resolve().absolute()) for p in env._docker_compose_paths]
         return cls(

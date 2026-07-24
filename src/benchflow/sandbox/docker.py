@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.subprocess
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -65,6 +66,38 @@ def _sanitize_docker_image_name(name: str) -> str:
         name = "0" + name
     name = re.sub(r"[^a-z0-9._-]", "-", name)
     return name
+
+
+def _docker_instance_scope_digest(
+    session_id: str,
+    *,
+    environment_dir: Path,
+    rollout_dir: Path | None,
+) -> str:
+    """Identify one local Docker sandbox even when jobs reuse a session id."""
+    instance_scope = "\0".join(
+        (
+            session_id,
+            str(environment_dir.resolve()),
+            str(rollout_dir.resolve()) if rollout_dir is not None else "",
+        )
+    )
+    return hashlib.sha256(instance_scope.encode()).hexdigest()[:12]
+
+
+def _rollout_scoped_image_name(
+    environment_name: str,
+    instance_scope_digest: str,
+) -> str:
+    """Return a build tag that cannot be overwritten by a sibling rollout.
+
+    Docker's layer cache is content-addressed and remains shared across tags,
+    so a rollout-specific tag isolates ``compose up`` without giving up build
+    cache reuse.
+    """
+    return _sanitize_docker_image_name(
+        f"bf__{environment_name}__{instance_scope_digest}"
+    )
 
 
 def _sanitize_docker_compose_project_name(name: str) -> str:
@@ -191,8 +224,26 @@ class DockerSandbox(BaseSandbox):
             else "/tmp/artifacts"
         )
 
+        # A session id is only unique inside one experiment. Collaborators can
+        # run that same experiment name under different output/environment
+        # roots on one daemon, so both the image tag and Compose project must
+        # share this stronger instance identity.
+        self._instance_scope_digest = _docker_instance_scope_digest(
+            session_id,
+            environment_dir=self.environment_dir,
+            rollout_dir=rollout_paths.rollout_dir if rollout_paths else None,
+        )
+        self._compose_project_name = _sanitize_docker_compose_project_name(
+            f"bf-{self._instance_scope_digest}"
+        )
         self._env_vars = DockerSandboxEnvVars(
-            main_image_name=_sanitize_docker_image_name(f"bf__{environment_name}"),
+            # MAIN_IMAGE_NAME used to be shared by every rollout of one task.
+            # Concurrent no-skill/with-skill builds could therefore replace the
+            # tag between another rollout's ``build`` and ``compose up``.
+            main_image_name=_rollout_scoped_image_name(
+                environment_name,
+                self._instance_scope_digest,
+            ),
             context_dir=str(self.environment_dir.resolve().absolute()),
             host_verifier_logs_path=verifier_dir,
             host_agent_logs_path=agent_dir,
@@ -304,7 +355,7 @@ class DockerSandbox(BaseSandbox):
             "docker",
             "compose",
             "--project-name",
-            _sanitize_docker_compose_project_name(self.session_id),
+            self._compose_project_name,
             "--project-directory",
             str(self.environment_dir.resolve().absolute()),
         ]
@@ -539,6 +590,34 @@ class DockerSandbox(BaseSandbox):
             )
             await self._force_kill_project()
 
+        if not self._keep_containers and not self._use_prebuilt:
+            # MAIN_IMAGE_NAME is rollout-scoped to prevent cross-run races.
+            # Drop that unique tag even for stop(delete=False); Docker retains
+            # the content-addressed layers as build cache, while the tag itself
+            # cannot accumulate forever.
+            try:
+                result = await asyncio.wait_for(
+                    self._docker_cli(
+                        ["image", "rm", self._env_vars.main_image_name],
+                        check=False,
+                    ),
+                    timeout=30,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to remove rollout Docker image tag %s: %s",
+                    self._env_vars.main_image_name,
+                    exc,
+                )
+                return
+            detail = result.stderr or result.stdout or ""
+            if result.return_code != 0 and "No such image" not in detail:
+                self.logger.warning(
+                    "Failed to remove rollout Docker image tag %s: %s",
+                    self._env_vars.main_image_name,
+                    detail.strip(),
+                )
+
     async def _force_kill_project(self) -> None:
         """Last-resort cleanup when `compose down` hangs or fails.
 
@@ -546,7 +625,7 @@ class DockerSandbox(BaseSandbox):
         rm -f`s them, then prunes the matching network. We don't propagate
         errors — by the time we're here, the batch just needs to move on.
         """
-        project = _sanitize_docker_compose_project_name(self.session_id)
+        project = self._compose_project_name
         label = f"label=com.docker.compose.project={project}"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -731,7 +810,7 @@ class DockerSandbox(BaseSandbox):
             await self._docker_cli(["stop", container_id])
             await self._docker_cli(["rm", "-f", container_id])
 
-        project_name = _sanitize_docker_compose_project_name(self.session_id)
+        project_name = self._compose_project_name
         new_name = f"{project_name}-main-restored-{uuid.uuid4().hex[:8]}"
 
         run_cmd = [
@@ -885,7 +964,7 @@ class DockerSandbox(BaseSandbox):
                 ["-f", shlex.quote(str(path.resolve().absolute()))]
             )
 
-        project_name = _sanitize_docker_compose_project_name(self.session_id)
+        project_name = self._compose_project_name
         compose_base = [
             "docker",
             "compose",
