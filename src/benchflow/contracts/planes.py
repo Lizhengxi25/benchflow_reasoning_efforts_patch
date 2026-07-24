@@ -51,6 +51,7 @@ class RolloutPlanes(Protocol):
         *,
         preserve_agent_network: bool,
         environment_manifest: EnvironmentManifest | None,
+        sandbox_user: str | None = None,
     ) -> Any: ...
 
     def manifest_environment(

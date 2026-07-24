@@ -40,13 +40,16 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
         assert kwargs["required_skill_names"] == ("mesh-analysis",)
         env = dict(kwargs["agent_env"])
         env["OPENAI_BASE_URL"] = "http://host.docker.internal:4000/v1"
-        return env, SimpleNamespace(kind="litellm")
+        return env, SimpleNamespace(
+            kind="litellm", base_url="http://host.docker.internal:4000"
+        )
 
     async def fake_connect_acp(**kwargs):
         calls.append("acp")
         assert kwargs["agent_env"]["OPENAI_BASE_URL"] == (
             "http://host.docker.internal:4000/v1"
         )
+        assert kwargs["trusted_llm_gateway_url"] == "http://host.docker.internal:4000"
         return (AsyncMock(), AsyncMock(), AsyncMock(), "codex-acp")
 
     rollout._planes = SimpleNamespace(
@@ -92,13 +95,16 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
         assert kwargs["agent"] == "claude-agent-acp"
         env = dict(kwargs["agent_env"])
         env["ANTHROPIC_BASE_URL"] = "http://host.docker.internal:4000"
-        return env, SimpleNamespace(kind="litellm")
+        return env, SimpleNamespace(
+            kind="litellm", base_url="http://host.docker.internal:4000"
+        )
 
     async def fake_connect_acp(**kwargs):
         calls.append("acp")
         assert kwargs["agent_env"]["ANTHROPIC_BASE_URL"] == (
             "http://host.docker.internal:4000"
         )
+        assert kwargs["trusted_llm_gateway_url"] == "http://host.docker.internal:4000"
         return (AsyncMock(), AsyncMock(), AsyncMock(), "claude-agent-acp")
 
     rollout._planes = SimpleNamespace(

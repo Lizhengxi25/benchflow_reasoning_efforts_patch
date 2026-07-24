@@ -11,6 +11,7 @@ Does not own:
     - Running the verifier itself — see SDK._verify
 """
 
+import ipaddress
 import json as _json
 import logging
 import os
@@ -91,8 +92,138 @@ def _resolve_locked_paths(
 # Sandbox user + privilege drop
 
 
-def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
+_DOCKER_HOST_GATEWAY_NAME = "host.docker.internal"
+_DOCKER_GATEWAY_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_docker_gateway_host(host: str) -> bool:
+    """Return whether *host* can be BenchFlow's Docker-to-host gateway."""
+    if host == _DOCKER_HOST_GATEWAY_NAME:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv4Address) and any(
+        address in network for network in _DOCKER_GATEWAY_NETWORKS
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _url_origin(url: str) -> tuple[str, str, int] | None:
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    host = parsed.hostname or ""
+    if (
+        parsed.scheme != "http"
+        or not host
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    return parsed.scheme, host, port
+
+
+def _no_web_llm_gateway(
+    agent_env: dict[str, str],
+    *,
+    trusted_gateway_url: str | None = None,
+) -> tuple[str, int]:
+    """Validate and return the only non-loopback target an agent may reach.
+
+    Host-side LiteLLM advertises ``BENCHFLOW_PROVIDER_BASE_URL`` to every
+    proxy-routed agent. Agent-native variables differ (OpenHands uses
+    ``LLM_BASE_URL`` while Claude uses ``ANTHROPIC_BASE_URL``), so the generic
+    provider URL is the canonical policy input. Key-free replay runs do not
+    start LiteLLM and continue to use their loopback ``LLM_BASE_URL``.
+    """
+    provider_name = agent_env.get("BENCHFLOW_PROVIDER_NAME", "")
+    if provider_name == "litellm":
+        base_url = agent_env.get("BENCHFLOW_PROVIDER_BASE_URL", "")
+    else:
+        base_url = agent_env.get("LLM_BASE_URL", "")
+
+    origin = _url_origin(base_url)
+    if origin is not None and _is_loopback_host(origin[1]):
+        _, host, port = origin
+        return host, port
+    trusted_origin = _url_origin(trusted_gateway_url or "")
+    if (
+        origin is not None
+        and trusted_origin == origin
+        and provider_name == "litellm"
+        and _is_docker_gateway_host(origin[1])
+    ):
+        _, host, port = origin
+        return host, port
+
+    raise RuntimeError(
+        "No-web agent requires an HTTP loopback LLM_BASE_URL with a port or "
+        "BenchFlow's internal LiteLLM Docker host-gateway URL; direct provider "
+        "URLs are forbidden"
+    )
+
+
+def _agent_egress_firewall_cmd(
+    sandbox_user: str,
+    *,
+    gateway_host: str | None = None,
+    gateway_port: int | None = None,
+) -> str:
     user = shlex.quote(sandbox_user)
+    gateway_setup = ""
+    if gateway_host is not None and gateway_port is not None:
+        quoted_host = shlex.quote(gateway_host)
+        quoted_port = shlex.quote(str(gateway_port))
+        if gateway_host == _DOCKER_HOST_GATEWAY_NAME:
+            # Resolve the Docker-owned hostname as root before installing the
+            # sandbox-user reject rule, then pin the result in /etc/hosts. The
+            # agent therefore needs neither broad DNS egress nor a hostname
+            # allow rule that could change after policy installation.
+            gateway_setup = (
+                f"gateway_host={quoted_host}; "
+                'gateway_ips=$(getent ahostsv4 "$gateway_host" '
+                "| awk '{print $1}' | sort -u); "
+                'if [ -z "$gateway_ips" ]; then '
+                "echo 'Could not resolve Docker host gateway' >&2; exit 86; fi; "
+                'for gateway_ip in $gateway_ips; do case "$gateway_ip" in '
+                "10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;; "
+                "*) echo 'Docker host gateway resolved outside private IPv4' "
+                ">&2; exit 86;; esac; done; "
+                'if ! awk -v h="$gateway_host" '
+                "'{ for (i=2; i<=NF; i++) if ($i == h) found=1 } "
+                "END { exit !found }' /etc/hosts; then "
+                'for gateway_ip in $gateway_ips; do printf "%s\\t%s\\n" '
+                '"$gateway_ip" "$gateway_host" >> /etc/hosts; done; fi; '
+            )
+        else:
+            gateway_setup = f"gateway_ips={quoted_host}; "
+        gateway_setup += (
+            "for gateway_ip in $gateway_ips; do "
+            'iptables -C OUTPUT -p tcp -d "$gateway_ip" '
+            f'--dport {quoted_port} -m owner --uid-owner "$agent_uid" '
+            "-j ACCEPT 2>/dev/null || "
+            'iptables -I OUTPUT 1 -p tcp -d "$gateway_ip" '
+            f'--dport {quoted_port} -m owner --uid-owner "$agent_uid" '
+            "-j ACCEPT; "
+            "done; "
+        )
     return (
         "set -e; "
         "if ! command -v iptables >/dev/null 2>&1; then "
@@ -105,6 +236,7 @@ def _agent_egress_firewall_cmd(sandbox_user: str) -> str:
         "apk add --no-cache iptables >/dev/null; "
         "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
         f"agent_uid=$(id -u {user}) || exit 86; "
+        f"{gateway_setup}"
         'iptables -C OUTPUT -o lo -m owner --uid-owner "$agent_uid" '
         "-j ACCEPT 2>/dev/null || "
         'iptables -I OUTPUT 1 -o lo -m owner --uid-owner "$agent_uid" '
@@ -147,24 +279,25 @@ async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
+    *,
+    trusted_gateway_url: str | None = None,
 ) -> None:
     """Block sandbox-user external egress after ACP bootstrap, before prompting."""
     if not sandbox_user or agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") != "1":
         return
 
-    base_url = agent_env.get("LLM_BASE_URL", "")
-    parsed = urlsplit(base_url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.port is None
-    ):
-        raise RuntimeError(
-            "No-web agent requires an HTTP loopback LLM_BASE_URL with a port"
-        )
+    gateway_host, gateway_port = _no_web_llm_gateway(
+        agent_env,
+        trusted_gateway_url=trusted_gateway_url,
+    )
+    is_loopback = _is_loopback_host(gateway_host)
 
     result = await env.exec(
-        _agent_egress_firewall_cmd(sandbox_user),
+        _agent_egress_firewall_cmd(
+            sandbox_user,
+            gateway_host=None if is_loopback else gateway_host,
+            gateway_port=None if is_loopback else gateway_port,
+        ),
         user="root",
         timeout_sec=120,
     )
@@ -172,7 +305,8 @@ async def enforce_agent_egress_firewall(
         detail = _exec_failure_detail(result)
         raise RuntimeError(f"Failed to enforce sandbox-user egress firewall.{detail}")
     logger.info(
-        "Sandbox-user egress firewall active for %s (loopback allowed)",
+        "Sandbox-user egress firewall active for %s "
+        "(loopback and internal LLM gateway allowed)",
         sandbox_user,
     )
 

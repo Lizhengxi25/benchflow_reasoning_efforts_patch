@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -17,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn, cast
 from uuid import uuid4
@@ -53,6 +54,13 @@ from benchflow.sandbox.providers import OFF_BOX_MODEL_PROVIDERS
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import Trajectory
 from benchflow.usage_tracking import UsageTrackingConfig, usage_unavailable
+
+from .wire_capture import (
+    PASSTHROUGH,
+    PROVIDER_REQUEST_FILTER_ENV,
+    ProviderWireProxy,
+    validate_filter_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +211,8 @@ class HostLiteLLMProcess(LiteLLMProcess):
         stderr_path: Path,
         session_id: str,
         agent_name: str,
+        wire_proxy: ProviderWireProxy | None = None,
+        debug_output_dir: Path | None = None,
     ) -> None:
         self.route = route
         self.process = process
@@ -213,6 +223,8 @@ class HostLiteLLMProcess(LiteLLMProcess):
         self.stderr_path = stderr_path
         self.session_id = session_id
         self.agent_name = agent_name
+        self.wire_proxy = wire_proxy
+        self.debug_output_dir = debug_output_dir
         self.trajectory: Trajectory | None = None
 
     @property
@@ -223,19 +235,54 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return self.process.poll() is None
 
     async def stop(self) -> None:
-        await self._stop_live_capture()
-        await _await_log_stable(self._log_size)
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                await asyncio.to_thread(self.process.wait, 10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                await asyncio.to_thread(self.process.wait, 10)
-        self._load_callback_log()
-        self._reconcile_live_capture()
-        with contextlib.suppress(Exception):
-            shutil.rmtree(self.runtime_dir, ignore_errors=True)
+        try:
+            await self._stop_live_capture()
+            await _await_log_stable(self._log_size)
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    await asyncio.to_thread(self.process.wait, 10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    await asyncio.to_thread(self.process.wait, 10)
+            self._load_callback_log()
+            self._reconcile_live_capture()
+        finally:
+            self._persist_debug_logs()
+            if self.wire_proxy is not None:
+                await asyncio.to_thread(self.wire_proxy.stop)
+                self.wire_proxy = None
+            with contextlib.suppress(Exception):
+                shutil.rmtree(self.runtime_dir, ignore_errors=True)
+
+    def _persist_debug_logs(self) -> None:
+        """Keep host LiteLLM diagnostics when raw provider capture is enabled."""
+        if self.debug_output_dir is None:
+            return
+        safe_session = (
+            re.sub(
+                r"[^A-Za-z0-9_.-]+",
+                "-",
+                self.session_id,
+            ).strip("-._")
+            or "main"
+        )
+        target_dir = self.debug_output_dir / safe_session
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(target_dir, 0o700)
+            for source, name in (
+                (self.stdout_path, "stdout.log"),
+                (self.stderr_path, "stderr.log"),
+                (self.log_path, "callback.jsonl"),
+            ):
+                if not source.is_file():
+                    continue
+                target = target_dir / name
+                shutil.copyfile(source, target)
+                os.chmod(target, 0o600)
+        except Exception as exc:
+            logger.warning("Could not persist LiteLLM debug logs: %s", exc)
 
     def _log_size(self) -> int:
         try:
@@ -599,6 +646,7 @@ async def _start_host_litellm(
     environment: str,
     session_id: str,
     agent_name: str,
+    wire_capture_dir: Path | None = None,
 ) -> HostLiteLLMProcess:
     runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
     log_path = runtime_dir / "callback.jsonl"
@@ -606,40 +654,94 @@ async def _start_host_litellm(
     stderr_path = runtime_dir / "stderr.log"
     port = _find_free_port()
     bind = _host_bind_address(environment)
-    config = litellm_proxy_config(route, master_key=master_key)
-    config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
-    env = dict(os.environ)
-    env.update(agent_env)
-    env.update(
-        {
-            "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
-            "LITELLM_MASTER_KEY": master_key,
-            "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
-            **_PROXY_DOCS_DISABLE_ENV,
-        }
-    )
-    litellm_executable = _host_litellm_executable()
-    stdout = stdout_path.open("ab")
-    stderr = stderr_path.open("ab")
+    wire_proxy: ProviderWireProxy | None = None
+    config_route = route
+    upstream_api_base = route.litellm_params.get("api_base")
     try:
-        process = subprocess.Popen(
-            [
-                litellm_executable,
-                "--config",
-                str(config_path),
-                "--host",
-                bind,
-                "--port",
-                str(port),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            env=env,
+        filter_mode = validate_filter_mode(
+            agent_env.get(PROVIDER_REQUEST_FILTER_ENV, "").strip().lower()
+            or PASSTHROUGH
         )
-    finally:
-        stdout.close()
-        stderr.close()
+        needs_wire_proxy = wire_capture_dir is not None or filter_mode != PASSTHROUGH
+        if needs_wire_proxy:
+            if not (
+                isinstance(upstream_api_base, str)
+                and upstream_api_base.startswith(("http://", "https://"))
+            ):
+                purpose = (
+                    "provider body capture"
+                    if wire_capture_dir is not None
+                    else "final-boundary request filtering"
+                )
+                raise RuntimeError(
+                    f"{purpose} requires an HTTP(S) provider api_base; "
+                    f"route {route.provider_name!r} does not expose one"
+                )
+            wire_proxy = ProviderWireProxy(
+                upstream=upstream_api_base,
+                mode=filter_mode,
+                capture_dir=wire_capture_dir,
+            )
+            proxied_params = dict(route.litellm_params)
+            proxied_params["api_base"] = wire_proxy.base_url
+            config_route = replace(route, litellm_params=proxied_params)
+            logger.info(
+                "Provider final-boundary proxy enabled at %s (mode=%s, output=%s)",
+                wire_proxy.base_url,
+                filter_mode,
+                wire_capture_dir,
+            )
+    except BaseException:
+        if wire_proxy is not None:
+            wire_proxy.stop()
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        raise
+    try:
+        config = litellm_proxy_config(config_route, master_key=master_key)
+        config_path, _, _ = _write_runtime_files(runtime_dir, config=config)
+        env = dict(os.environ)
+        env.update(agent_env)
+        if wire_proxy is not None:
+            # The final-boundary proxy now owns this transformation. Leaving the
+            # variable visible to the LiteLLM callback would filter once before the
+            # provider adapter serialized the logical request, making
+            # logical_request.body already lossy.
+            env.pop(PROVIDER_REQUEST_FILTER_ENV, None)
+        env.update(
+            {
+                "PYTHONPATH": f"{runtime_dir}{os.pathsep}{env.get('PYTHONPATH', '')}",
+                "LITELLM_MASTER_KEY": master_key,
+                "BENCHFLOW_LITELLM_LOG_PATH": str(log_path),
+                **_PROXY_DOCS_DISABLE_ENV,
+            }
+        )
+        litellm_executable = _host_litellm_executable()
+        stdout = stdout_path.open("ab")
+        stderr = stderr_path.open("ab")
+        try:
+            process = subprocess.Popen(
+                [
+                    litellm_executable,
+                    "--config",
+                    str(config_path),
+                    "--host",
+                    bind,
+                    "--port",
+                    str(port),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                env=env,
+            )
+        finally:
+            stdout.close()
+            stderr.close()
+    except BaseException:
+        if wire_proxy is not None:
+            wire_proxy.stop()
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        raise
     runner = HostLiteLLMProcess(
         route=route,
         process=process,
@@ -650,6 +752,12 @@ async def _start_host_litellm(
         stderr_path=stderr_path,
         session_id=session_id,
         agent_name=agent_name,
+        wire_proxy=wire_proxy,
+        debug_output_dir=(
+            wire_capture_dir.parent / "litellm"
+            if wire_capture_dir is not None
+            else None
+        ),
     )
     try:
         await _poll_host_health(runner)
@@ -671,8 +779,12 @@ async def _start_host_litellm(
                     await asyncio.to_thread(process.wait, 5)
                 if process.poll() is None:
                     process.kill()
+        runner._persist_debug_logs()
         with contextlib.suppress(Exception):
             shutil.rmtree(runtime_dir, ignore_errors=True)
+        if wire_proxy is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(wire_proxy.stop)
         raise
     logger.info("LiteLLM proxy listening on %s", runner.base_url)
     return runner
@@ -1036,6 +1148,8 @@ def _provider_secret_env_names() -> set[str]:
     names = {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
@@ -1186,6 +1300,10 @@ def _wire_litellm_agent_env(
     updated = dict(agent_env)
     updated.pop(_SKILL_CATALOG_GATE_AGENT_ENV, None)
     updated.pop(_REQUIRED_SKILL_NAMES_ENV, None)
+    # Internal marker used only to decide whether host subscription credentials
+    # should be uploaded. A proxy-routed process must not retain a signal that
+    # can reactivate native subscription auth.
+    updated.pop("_BENCHFLOW_SUBSCRIPTION_AUTH", None)
     # Isolation: the agent must reach providers only through the proxy. Drop raw
     # upstream provider secrets AND endpoints so a compromised or curious agent
     # cannot bypass the gateway (and its usage metering) or read live keys. The
@@ -1330,6 +1448,7 @@ async def ensure_litellm_runtime(
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
+    capture_model_io: bool = False,
 ) -> tuple[dict[str, str], Any | None]:
     """Start/reuse LiteLLM and rewrite the agent env to talk to it.
 
@@ -1345,6 +1464,15 @@ async def ensure_litellm_runtime(
     usage_cfg = UsageTrackingConfig.coerce(usage_tracking).with_env_defaults()
 
     if uses_native_subscription_auth(agent, model, agent_env):
+        if capture_model_io:
+            await _raise_litellm_unavailable(
+                runtime=runtime,
+                error=(
+                    "Raw provider body capture is unsupported for native "
+                    "subscription authentication because provider traffic does "
+                    "not pass through BenchFlow's host LiteLLM runtime."
+                ),
+            )
         return await _skip_litellm_runtime(
             agent_env,
             runtime,
@@ -1352,6 +1480,14 @@ async def ensure_litellm_runtime(
         )
 
     if not needs_litellm_runtime(agent, model):
+        if capture_model_io:
+            await _raise_litellm_unavailable(
+                runtime=runtime,
+                error=(
+                    f"Raw provider body capture is unsupported for agent {agent!r}: "
+                    "its provider traffic cannot be routed through LiteLLM."
+                ),
+            )
         if usage_cfg.mode == "required" and agent != "oracle":
             raise RuntimeError(
                 "Token usage tracking is required, but agent "
@@ -1359,6 +1495,24 @@ async def ensure_litellm_runtime(
             )
         return await _skip_litellm_runtime(agent_env, runtime)
     assert model is not None
+
+    if capture_model_io and environment in _SANDBOX_LOCAL_ENVIRONMENTS:
+        await _raise_litellm_unavailable(
+            runtime=runtime,
+            error=(
+                "Raw provider body capture currently supports host/Docker "
+                "LiteLLM only; sandbox-local provider runtimes keep the existing "
+                "callback trajectory path."
+            ),
+        )
+    if capture_model_io and live_trajectory_path is None:
+        await _raise_litellm_unavailable(
+            runtime=runtime,
+            error=(
+                "Raw provider body capture requires a rollout trajectory path "
+                "so BenchFlow can place artifacts under agent/model_io."
+            ),
+        )
 
     if environment in _SANDBOX_LOCAL_ENVIRONMENTS and sandbox is None:
         raise RuntimeError("sandbox-local LiteLLM requires a sandbox handle")
@@ -1394,8 +1548,36 @@ async def ensure_litellm_runtime(
     skill_gate_key = json.dumps(
         sorted(set(required_skill_names)), separators=(",", ":")
     )
+    try:
+        provider_filter_mode = validate_filter_mode(
+            agent_env.get(PROVIDER_REQUEST_FILTER_ENV, "").strip().lower()
+            or PASSTHROUGH
+        )
+    except ValueError as exc:
+        await _raise_litellm_unavailable(
+            runtime=runtime,
+            error=f"Invalid provider request filter: {exc}",
+        )
+    wire_capture_dir = (
+        live_trajectory_path.parent.parent / "agent" / "model_io"
+        if capture_model_io and live_trajectory_path is not None
+        else None
+    )
+    provider_boundary_key = json.dumps(
+        {
+            "filter": provider_filter_mode,
+            "capture_dir": (
+                str(wire_capture_dir.resolve())
+                if wire_capture_dir is not None
+                else None
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     config_key = (
-        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}"
+        f"{environment}:{route.config_key}:{agent}:{session_id}:{skill_gate_key}:"
+        f"{provider_boundary_key}"
     )
     if runtime is not None and getattr(runtime, "kind", None) == "litellm":
         server = getattr(runtime, "server", None)
@@ -1440,6 +1622,7 @@ async def ensure_litellm_runtime(
                 environment=environment,
                 session_id=session_id,
                 agent_name=agent,
+                wire_capture_dir=wire_capture_dir,
             )
     except BedrockPatchPreflightError:
         raise

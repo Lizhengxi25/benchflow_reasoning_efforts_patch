@@ -29,6 +29,7 @@ from benchflow.sandbox._base import (
     wrap_command_with_env_file,
 )
 from benchflow.sandbox._compose import (
+    COMPOSE_AGENT_FIREWALL_PATH,
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
@@ -111,6 +112,7 @@ class DockerSandbox(BaseSandbox):
     _DOCKER_COMPOSE_BUILD_PATH = COMPOSE_BUILD_PATH
     _DOCKER_COMPOSE_PREBUILT_PATH = COMPOSE_PREBUILT_PATH
     _DOCKER_COMPOSE_NO_NETWORK_PATH = COMPOSE_NO_NETWORK_PATH
+    _DOCKER_COMPOSE_AGENT_FIREWALL_PATH = COMPOSE_AGENT_FIREWALL_PATH
 
     _image_build_locks: ClassVar[dict[str, asyncio.Lock]] = {}
     _build_semaphore: ClassVar[asyncio.Semaphore | None] = None
@@ -155,6 +157,7 @@ class DockerSandbox(BaseSandbox):
         task_env_config: SandboxConfig,
         keep_containers: bool = False,
         mounts_json: list[dict[str, str]] | None = None,
+        agent_egress_firewall: bool = False,
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -170,6 +173,7 @@ class DockerSandbox(BaseSandbox):
         self._keep_containers = keep_containers
         self._mounts_json = mounts_json
         self._mounts_compose_path: Path | None = None
+        self._agent_egress_firewall = agent_egress_firewall
 
         verifier_dir = (
             str(rollout_paths.verifier_dir.resolve().absolute())
@@ -262,6 +266,8 @@ class DockerSandbox(BaseSandbox):
 
         if not self.task_env_config.allow_internet:
             paths.append(self._DOCKER_COMPOSE_NO_NETWORK_PATH)
+        if getattr(self, "_agent_egress_firewall", False):
+            paths.append(self._DOCKER_COMPOSE_AGENT_FIREWALL_PATH)
 
         return paths
 

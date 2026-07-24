@@ -92,6 +92,7 @@ class SDK:
         timing: dict[str, float],
         scenes: list[Scene] | None = None,
         source_provenance: dict[str, Any] | None = None,
+        capture_model_io: bool = False,
     ) -> RolloutResult:
         return _build_rollout_result(
             rollout_dir,
@@ -113,6 +114,7 @@ class SDK:
             timing=timing,
             scenes=scenes,
             source_provenance=source_provenance,
+            capture_model_io=capture_model_io,
         )
 
     async def _start_env_and_upload(
@@ -177,6 +179,7 @@ class SDK:
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
+        capture_model_io: bool = False,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -227,5 +230,6 @@ class SDK:
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
+            capture_model_io=capture_model_io,
         )
         return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

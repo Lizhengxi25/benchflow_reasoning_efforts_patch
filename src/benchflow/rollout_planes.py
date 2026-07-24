@@ -102,6 +102,7 @@ class DefaultRolloutPlanes:
         *,
         preserve_agent_network: bool,
         environment_manifest: EnvironmentManifest | None,
+        sandbox_user: str | None = None,
     ) -> Any:
         return _create_environment(
             environment,
@@ -111,6 +112,7 @@ class DefaultRolloutPlanes:
             rollout_paths,
             preserve_agent_network=preserve_agent_network,
             environment_manifest=environment_manifest,
+            sandbox_user=sandbox_user,
         )
 
     def manifest_environment(

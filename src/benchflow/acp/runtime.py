@@ -651,6 +651,7 @@ async def connect_acp(
     agent_cwd: str,
     reasoning_effort: str | None = None,
     mcp_servers: list[McpServerSpec] | None = None,
+    trusted_llm_gateway_url: str | None = None,
 ) -> tuple[ACPClient, object, ACPSessionAdapter, str]:
     """Create ACP transport, connect, init session, and configure model/effort.
 
@@ -788,7 +789,14 @@ async def connect_acp(
             agent_env=agent_env,
             reasoning_effort=reasoning_effort,
         )
-        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+        firewall_kwargs = (
+            {"trusted_gateway_url": trusted_llm_gateway_url}
+            if trusted_llm_gateway_url is not None
+            else {}
+        )
+        await enforce_agent_egress_firewall(
+            env, sandbox_user, agent_env, **firewall_kwargs
+        )
     except Exception:
         with contextlib.suppress(Exception):
             await acp_client.close()

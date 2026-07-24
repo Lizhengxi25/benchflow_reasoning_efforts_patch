@@ -1,6 +1,8 @@
 """Tests for ACP client ↔ mock agent — Step 10."""
 
 import asyncio
+import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -784,6 +786,173 @@ class TestContainerTransportStderrCapture:
         assert transport._stderr_task is None
         assert transport._agent_log_file is None
         assert transport._agent_stderr_log_file is None
+
+
+class TestContainerTransportWireCapture:
+    @pytest.mark.asyncio
+    async def test_records_both_json_rpc_directions_and_redacts_secrets(
+        self, tmp_path
+    ) -> None:
+        """Guards the SkillsBench 1.1 integration wire-debug artifact."""
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            return_value=(
+                b'{"jsonrpc":"2.0","id":100001,'
+                b'"result":{"token":"sk-or-v1-abcdefghijklmnop"}}\n'
+            )
+        )
+        fake_process.read_stderr = AsyncMock(return_value=b"")
+        agent_log = tmp_path / "claude_agent_acp.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="claude-agent-acp",
+            agent_log_path=agent_log,
+        )
+
+        await transport.start()
+        try:
+            await transport.send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 100001,
+                    "method": "session/prompt",
+                    "params": {"authorization": "Bearer secret-token-for-wire-test"},
+                }
+            )
+            message = await transport.receive()
+        finally:
+            await transport.close()
+
+        assert message["id"] == 100001
+        wire_path = tmp_path / "claude_agent_acp.acp_wire.jsonl"
+        records = [
+            json.loads(line)
+            for line in wire_path.read_text().splitlines()
+            if line.strip()
+        ]
+        assert [record["direction"] for record in records] == [
+            "client_to_agent",
+            "agent_to_client",
+        ]
+        assert all(record["timestamp"] for record in records)
+        serialized = wire_path.read_text()
+        assert "secret-token-for-wire-test" not in serialized
+        assert "sk-or-v1-abcdefghijklmnop" not in serialized
+        assert "***REDACTED***" in serialized
+        assert (wire_path.stat().st_mode & 0o777) == 0o600
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_stage", ["open", "write", "flush"])
+    async def test_capture_failures_do_not_block_send_and_capture_retries(
+        self, tmp_path, monkeypatch, failure_stage
+    ) -> None:
+        """Guards commit 06aacf7f's ACP wire capture against sink failures."""
+        fake_process = AsyncMock()
+        agent_log = tmp_path / "codex_acp.txt"
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="codex-acp",
+            agent_log_path=agent_log,
+        )
+
+        if failure_stage == "open":
+            real_open = os.open
+            attempts = 0
+
+            def fail_once(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("synthetic wire open failure")
+                return real_open(*args, **kwargs)
+
+            monkeypatch.setattr(
+                "benchflow.acp.container_transport.os.open",
+                fail_once,
+            )
+        else:
+            failing_file = MagicMock()
+            if failure_stage == "write":
+                failing_file.write.side_effect = OSError("synthetic wire write failure")
+            else:
+                failing_file.write.side_effect = lambda value: len(value)
+                failing_file.flush.side_effect = OSError("synthetic wire flush failure")
+            transport._agent_wire_log_file = failing_file
+
+        first = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+        second = {"jsonrpc": "2.0", "id": 2, "method": "session/new"}
+        await transport.send(first)
+        await transport.send(second)
+        transport._close_log_files()
+
+        assert fake_process.writeline.await_args_list == [
+            call(json.dumps(first)),
+            call(json.dumps(second)),
+        ]
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "codex_acp.acp_wire.jsonl").read_text().splitlines()
+        ]
+        assert [record["message"]["id"] for record in records] == [2]
+        assert transport._agent_wire_log_error_reported is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_stage", ["open", "write", "flush"])
+    async def test_capture_failures_do_not_block_receive_and_capture_retries(
+        self, tmp_path, monkeypatch, failure_stage
+    ) -> None:
+        """Guards commit 06aacf7f's ACP wire capture against sink failures."""
+        first = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+        second = {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
+        fake_process = AsyncMock()
+        fake_process.readline = AsyncMock(
+            side_effect=[
+                f"{json.dumps(first)}\n".encode(),
+                f"{json.dumps(second)}\n".encode(),
+            ]
+        )
+        transport = ContainerTransport(
+            container_process=fake_process,
+            command="claude-agent-acp",
+            agent_log_path=tmp_path / "claude_agent_acp.txt",
+        )
+
+        if failure_stage == "open":
+            real_open = os.open
+            attempts = 0
+
+            def fail_once(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("synthetic wire open failure")
+                return real_open(*args, **kwargs)
+
+            monkeypatch.setattr(
+                "benchflow.acp.container_transport.os.open",
+                fail_once,
+            )
+        else:
+            failing_file = MagicMock()
+            if failure_stage == "write":
+                failing_file.write.side_effect = OSError("synthetic wire write failure")
+            else:
+                failing_file.write.side_effect = lambda value: len(value)
+                failing_file.flush.side_effect = OSError("synthetic wire flush failure")
+            transport._agent_wire_log_file = failing_file
+
+        assert await transport.receive() == first
+        assert await transport.receive() == second
+        transport._close_log_files()
+
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "claude_agent_acp.acp_wire.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert [record["message"]["id"] for record in records] == [2]
+        assert transport._agent_wire_log_error_reported is False
 
 
 class TestACPInterleaving:

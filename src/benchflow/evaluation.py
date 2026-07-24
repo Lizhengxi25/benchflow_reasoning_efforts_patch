@@ -482,6 +482,7 @@ class EvaluationConfig:
     agent: str = DEFAULT_AGENT
     model: str | None = None
     reasoning_effort: str | None = None
+    capture_model_io: bool = False
     environment: str = "docker"
     concurrency: int = 4
     build_concurrency: int | None = None
@@ -863,6 +864,7 @@ class Evaluation:
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model")),
             reasoning_effort=raw.get("reasoning_effort"),
+            capture_model_io=bool(raw.get("capture_model_io", False)),
             environment=raw.get("environment", "docker"),
             concurrency=raw.get("concurrency", 4),
             build_concurrency=raw.get("build_concurrency"),
@@ -960,6 +962,9 @@ class Evaluation:
             model=model,
             reasoning_effort=agent_cfg.get(
                 "reasoning_effort", raw.get("reasoning_effort")
+            ),
+            capture_model_io=bool(
+                agent_cfg.get("capture_model_io", raw.get("capture_model_io", False))
             ),
             environment=environment,
             concurrency=concurrency,
@@ -1219,6 +1224,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            capture_model_io=cfg.capture_model_io,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,
@@ -1269,6 +1275,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            capture_model_io=cfg.capture_model_io,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
             job_name=self._job_name,

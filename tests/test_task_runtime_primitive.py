@@ -131,6 +131,7 @@ class _FakePlanes:
         *,
         preserve_agent_network: bool,
         environment_manifest: Any,
+        sandbox_user: str | None = None,
     ) -> _FakeSandbox:
         self.created.append(
             {
@@ -138,6 +139,7 @@ class _FakePlanes:
                 "task_path": task_path,
                 "rollout_name": rollout_name,
                 "preserve_agent_network": preserve_agent_network,
+                "sandbox_user": sandbox_user,
             }
         )
         return self.sandbox
@@ -244,6 +246,7 @@ async def test_task_runtime_bash_verify_writes_rollout_artifacts(
     assert result.rewards == {"reward": 1.0}
     assert planes.sandbox.started == 1
     assert planes.sandbox.stopped == 1
+    assert planes.created[0]["sandbox_user"] == "agent"
     assert planes.locked_paths == [
         "/oracle",
         "/solution",

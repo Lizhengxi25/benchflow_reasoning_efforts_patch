@@ -262,6 +262,7 @@ bench eval run --tasks-dir ./tasks --matrix matrix.yaml --trials 3
 | `--skill-creator-dir` | — | Path to a `skill-creator` directory (or a skills root containing it); used when `--skill-mode self-gen` |
 | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated skill run |
 | `--agent-env` | — | Agent environment variable as `KEY=VALUE`; repeatable |
+| `--capture-model-io` | `false` | Capture logical model requests plus the final provider HTTP request and raw response bytes. This may contain sensitive prompt or tool data and is disabled by default. |
 | `--include` | — | Only run these task names; repeatable (e.g. `--include jax-computing-basics --include data-to-d3`) |
 | `--exclude` | — | Skip these task names; repeatable (e.g. `--exclude quantum-numerical-simulation`) |
 | `--loop-strategy` | — | Wrap each rollout in a loop, e.g. `verify-retry:k=3,feedback=names` or `self-review:k=3` (omit for single-shot) |

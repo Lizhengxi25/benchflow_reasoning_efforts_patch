@@ -453,6 +453,58 @@ class TestAgentEgressFirewall:
         assert "iptables -C OUTPUT -o lo" in _cmd
         assert env.exec.await_args.kwargs == {"user": "root", "timeout_sec": 120}
 
+    @pytest.mark.parametrize(
+        "gateway_url,expected_target",
+        [
+            ("http://host.docker.internal:4000/v1", "host.docker.internal"),
+            ("http://172.17.0.1:4000/v1", "172.17.0.1"),
+        ],
+    )
+    async def test_policy_allows_only_litellm_docker_gateway(
+        self, gateway_url, expected_target
+    ):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "BENCHFLOW_PROVIDER_NAME": "litellm",
+                "BENCHFLOW_PROVIDER_BASE_URL": gateway_url,
+            },
+            trusted_gateway_url=gateway_url,
+        )
+
+        (_cmd,) = env.exec.await_args.args
+        assert expected_target in _cmd
+        assert "--dport 4000" in _cmd
+        assert '-m owner --uid-owner "$agent_uid" -j ACCEPT' in _cmd
+        assert '--uid-owner "$agent_uid" -j REJECT' in _cmd
+
+    async def test_policy_accepts_claude_gateway_without_llm_base_url(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock(return_value=MagicMock(return_code=0))
+
+        await enforce_agent_egress_firewall(
+            env,
+            "agent",
+            {
+                "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                "BENCHFLOW_PROVIDER_NAME": "litellm",
+                "BENCHFLOW_PROVIDER_BASE_URL": ("http://host.docker.internal:49152/v1"),
+                "ANTHROPIC_BASE_URL": "http://host.docker.internal:49152",
+            },
+            trusted_gateway_url="http://host.docker.internal:49152",
+        )
+
+        env.exec.assert_awaited_once()
+
     async def test_policy_rejects_non_loopback_proxy(self):
         from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
 
@@ -466,6 +518,76 @@ class TestAgentEgressFirewall:
                 {
                     "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
                     "LLM_BASE_URL": "https://api.openai.com/v1",
+                },
+            )
+
+        env.exec.assert_not_awaited()
+
+    async def test_policy_rejects_untrusted_private_gateway(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="direct provider URLs are forbidden"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {
+                    "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                    "BENCHFLOW_PROVIDER_NAME": "litellm",
+                    "BENCHFLOW_PROVIDER_BASE_URL": "http://172.17.0.1:4000/v1",
+                },
+            )
+
+        env.exec.assert_not_awaited()
+
+    async def test_policy_rejects_gateway_port_not_owned_by_runtime(self):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="direct provider URLs are forbidden"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {
+                    "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                    "BENCHFLOW_PROVIDER_NAME": "litellm",
+                    "BENCHFLOW_PROVIDER_BASE_URL": (
+                        "http://host.docker.internal:4001/v1"
+                    ),
+                },
+                trusted_gateway_url="http://host.docker.internal:4000",
+            )
+
+        env.exec.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "provider_url",
+        [
+            "https://openrouter.ai/api/v1",
+            "http://8.8.8.8:4000/v1",
+            "http://provider.example.test:4000/v1",
+        ],
+    )
+    async def test_policy_rejects_external_url_even_when_labeled_litellm(
+        self, provider_url
+    ):
+        from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+        env = MagicMock()
+        env.exec = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="direct provider URLs are forbidden"):
+            await enforce_agent_egress_firewall(
+                env,
+                "agent",
+                {
+                    "BENCHFLOW_DISALLOW_WEB_TOOLS": "1",
+                    "BENCHFLOW_PROVIDER_NAME": "litellm",
+                    "BENCHFLOW_PROVIDER_BASE_URL": provider_url,
                 },
             )
 

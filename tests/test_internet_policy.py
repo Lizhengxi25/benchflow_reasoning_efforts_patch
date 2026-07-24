@@ -104,6 +104,7 @@ def test_create_environment_preserves_agent_network_for_llm_runs(tmp_path):
     assert copied_env.allow_internet is True
     assert original_env.allow_internet is False
     assert docker_env.call_args.kwargs["task_env_config"] is copied_env
+    assert docker_env.call_args.kwargs["agent_egress_firewall"] is True
 
 
 def test_create_environment_keeps_oracle_network_policy(tmp_path):
@@ -121,6 +122,55 @@ def test_create_environment_keeps_oracle_network_policy(tmp_path):
 
     original_env.model_copy.assert_not_called()
     assert docker_env.call_args.kwargs["task_env_config"] is original_env
+    assert docker_env.call_args.kwargs["agent_egress_firewall"] is False
+
+
+def test_root_agent_never_receives_firewall_net_admin_capability(tmp_path):
+    """Guards the exact-gateway no-web firewall integration for root agents."""
+    from benchflow.sandbox.setup import _create_environment
+
+    original_env = MagicMock()
+    original_env.allow_internet = False
+    copied_env = MagicMock()
+    copied_env.allow_internet = False
+    original_env.model_copy.return_value = copied_env
+    task = SimpleNamespace(
+        paths=SimpleNamespace(environment_dir=tmp_path / "environment"),
+        config=SimpleNamespace(environment=original_env),
+    )
+
+    with patch("benchflow.sandbox.docker.DockerSandbox") as docker_env:
+        _create_environment(
+            "docker",
+            task,
+            tmp_path,
+            "trial",
+            MagicMock(),
+            preserve_agent_network=True,
+            sandbox_user=None,
+        )
+
+    assert copied_env.allow_internet is True
+    assert docker_env.call_args.kwargs["task_env_config"] is copied_env
+    assert docker_env.call_args.kwargs["agent_egress_firewall"] is False
+
+
+def test_docker_agent_firewall_overlay_is_opt_in(tmp_path):
+    from benchflow.sandbox._compose import COMPOSE_AGENT_FIREWALL_PATH
+    from benchflow.sandbox.docker import DockerSandbox
+
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    sandbox.environment_dir = tmp_path
+    sandbox._use_prebuilt = True
+    sandbox._mounts_compose_path = None
+    sandbox.task_env_config = SimpleNamespace(allow_internet=True)
+
+    sandbox._agent_egress_firewall = False
+    assert COMPOSE_AGENT_FIREWALL_PATH not in sandbox._docker_compose_paths
+
+    sandbox._agent_egress_firewall = True
+    assert COMPOSE_AGENT_FIREWALL_PATH in sandbox._docker_compose_paths
+    assert "NET_ADMIN" in COMPOSE_AGENT_FIREWALL_PATH.read_text()
 
 
 @pytest.mark.asyncio
@@ -373,6 +423,7 @@ def test_create_environment_does_not_flip_when_internet_allowed(tmp_path):
 
     original_env.model_copy.assert_not_called()
     assert docker_env.call_args.kwargs["task_env_config"] is original_env
+    assert docker_env.call_args.kwargs["agent_egress_firewall"] is False
 
 
 def test_task_toml_allow_internet_false_parsed_correctly(tmp_path):

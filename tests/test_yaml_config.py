@@ -259,6 +259,28 @@ def test_rollout_yaml_reasoning_effort_reaches_primary_role():
     assert cfg.primary_reasoning_effort == "max"
 
 
+def test_rollout_yaml_reads_raw_model_io_opt_in():
+    """Direct rollout YAML keeps raw provider capture disabled unless requested."""
+    from benchflow._utils.yaml_loader import rollout_config_from_dict
+
+    default_cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "codex-acp",
+        }
+    )
+    capture_cfg = rollout_config_from_dict(
+        {
+            "task_dir": "tests/examples/hello-world-task",
+            "agent": "codex-acp",
+            "capture_model_io": True,
+        }
+    )
+
+    assert default_cfg.capture_model_io is False
+    assert capture_cfg.capture_model_io is True
+
+
 def test_native_yaml_rejects_bool_agent_idle_timeout(tmp_path):
     """Guards v0.5-idle-timeout@1566fed against bool-to-int coercion."""
     tasks = tmp_path / "tasks" / "task-a"

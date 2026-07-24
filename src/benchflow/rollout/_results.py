@@ -151,6 +151,7 @@ def _write_config(
     agent_env: dict[str, str],
     base_image_override: str | None = None,
     reasoning_effort: str | None = None,
+    capture_model_io: bool = False,
     usage_tracking: UsageTrackingConfig | None = None,
     concurrency: int | None = None,
     agent_idle_timeout: int | None = None,
@@ -180,6 +181,7 @@ def _write_config(
         "agent": agent,
         "model": model,
         "reasoning_effort": reasoning_effort,
+        "capture_model_io": capture_model_io,
         "environment": environment,
         "acp_transport": selected_acp_transport(
             agent=agent,
@@ -295,6 +297,7 @@ def _build_rollout_result(
     skill_policy: TaskSkillPolicy | None = None,
     sandbox_id: str | None = None,
     loop: dict[str, Any] | None = None,
+    capture_model_io: bool = False,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -393,6 +396,7 @@ def _build_rollout_result(
         "agent": result.agent,
         "agent_name": result.agent_name,
         "model": result.model,
+        "capture_model_io": capture_model_io,
         **skill_policy.config_metadata(),
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": result.n_skill_invocations,

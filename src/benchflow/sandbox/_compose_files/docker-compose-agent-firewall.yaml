@@ -1,0 +1,6 @@
+services:
+  main:
+    # Root installs an owner-scoped OUTPUT policy before the unprivileged agent
+    # receives its first prompt. Keep this capability off every other sandbox.
+    cap_add:
+      - NET_ADMIN

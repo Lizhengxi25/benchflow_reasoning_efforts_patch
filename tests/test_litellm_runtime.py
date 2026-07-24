@@ -113,14 +113,22 @@ async def test_opencode_required_skills_reach_proxy_not_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypatch):
+    starts = []
+
     async def fake_start(**kwargs):
+        starts.append(kwargs)
         return FakeLiteLLMServer("http://127.0.0.1:4000", kwargs["route"])
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fake_start)
 
     updated, _runtime = await ensure_litellm_runtime(
         agent="claude-agent-acp",
-        agent_env={"ANTHROPIC_API_KEY": "sk-ant"},
+        agent_env={
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-code-secret",
+            "CLAUDE_OAUTH_TOKEN": "oauth-legacy-secret",
+            "_BENCHFLOW_SUBSCRIPTION_AUTH": "1",
+        },
         model="claude-sonnet-4-6",
         runtime=None,
         environment="local",
@@ -132,6 +140,16 @@ async def test_claude_agent_uses_anthropic_compatible_litellm_endpoint(monkeypat
     assert updated["ANTHROPIC_API_KEY"] == ""
     assert updated["ANTHROPIC_MODEL"] == "benchflow-claude-sonnet-4-6"
     assert "CLAUDE_CODE_USE_BEDROCK" not in updated
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in updated
+    assert "CLAUDE_OAUTH_TOKEN" not in updated
+    assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in updated
+    assert updated["BENCHFLOW_PROVIDER_API_KEY"] == updated["ANTHROPIC_AUTH_TOKEN"]
+    assert updated["BENCHFLOW_PROVIDER_MODEL"] == updated["ANTHROPIC_MODEL"]
+    assert updated["BENCHFLOW_PROVIDER_BASE_URL"] == (
+        f"{updated['ANTHROPIC_BASE_URL']}/v1"
+    )
+    # Upstream credentials remain available only to the host proxy process.
+    assert starts[0]["agent_env"]["ANTHROPIC_API_KEY"] == "sk-ant"
 
 
 @pytest.mark.asyncio

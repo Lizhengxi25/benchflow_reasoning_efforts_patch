@@ -643,6 +643,25 @@ class TestWriteConfig:
         data = json.loads((tmp_path / "config.json").read_text())
         assert data["reasoning_effort"] == "max"
 
+    def test_config_json_records_raw_model_io_opt_in(self, tmp_path):
+        """Raw provider-body capture must be explicit and auditable."""
+        self._write(
+            tmp_path,
+            task_path=Path("/tasks/foo"),
+            agent="codex-acp",
+            model="openrouter/minimax/minimax-m3",
+            environment="docker",
+            sandbox_user="agent",
+            context_root=None,
+            timeout=3600,
+            started_at=datetime(2026, 7, 24),
+            agent_env={},
+            capture_model_io=True,
+        )
+
+        data = json.loads((tmp_path / "config.json").read_text())
+        assert data["capture_model_io"] is True
+
 
 def test_rollout_result_json_preserves_null_model(tmp_path):
     """Guards v0.5-integration@c30e130 against oracle result/config model drift."""
@@ -790,6 +809,30 @@ class TestRunWiring:
 
         assert seen["config"].agent_idle_timeout == 45
 
+    @pytest.mark.asyncio
+    async def test_run_forwards_raw_model_io_opt_in_to_rollout_config(
+        self, monkeypatch, tmp_path
+    ):
+        """SDK callers can opt in without relying on ambient environment state."""
+        from benchflow.models import RunResult
+        from benchflow.sdk import SDK
+
+        seen = {}
+
+        async def fake_create(config):
+            seen["config"] = config
+            trial = AsyncMock()
+            trial.run = AsyncMock(
+                return_value=RunResult(task_name="task-1", rewards={"reward": 1.0})
+            )
+            return trial
+
+        monkeypatch.setattr("benchflow.rollout.Rollout.create", fake_create)
+
+        await SDK().run(task_path=tmp_path, capture_model_io=True)
+
+        assert seen["config"].capture_model_io is True
+
 
 # _build_result
 
@@ -834,6 +877,13 @@ class TestBuildResult:
         assert "finished_at" in data
         assert data["partial_trajectory"] is False
         assert data["scenes"] == []
+
+    def test_result_json_records_raw_model_io_opt_in(self, tmp_path):
+        """Result and config artifacts expose the same capture policy."""
+        self._build(tmp_path, capture_model_io=True)
+
+        data = json.loads((tmp_path / "result.json").read_text())
+        assert data["capture_model_io"] is True
 
     def test_result_json_includes_scene_role_metadata(self, tmp_path):
         """Result artifacts retain scene/role metadata for trajectory review."""

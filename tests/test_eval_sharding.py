@@ -73,6 +73,18 @@ def test_worker_payload_without_loop_strategy_stays_none() -> None:
     assert _evaluation_config(json.loads(json.dumps(payload))).loop_strategy is None
 
 
+def test_worker_payload_round_trips_raw_model_io_opt_in() -> None:
+    """Sharded workers must not silently drop the sensitive capture policy."""
+    config = EvaluationConfig(capture_model_io=True)
+    shard = EvalShard(index=0, task_names=("task-a",), concurrency=1)
+
+    payload = _config_payload(config, shard=shard)
+    restored = _evaluation_config(json.loads(json.dumps(payload)))
+
+    assert payload["capture_model_io"] is True
+    assert restored.capture_model_io is True
+
+
 def test_worker_payload_artifact_redacts_agent_env_secrets() -> None:
     config = EvaluationConfig(
         agent_env={

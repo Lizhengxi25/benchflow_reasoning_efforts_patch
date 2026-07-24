@@ -85,6 +85,7 @@ class EvalCreateRequest:
     agent: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    capture_model_io: bool = False
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
@@ -184,6 +185,7 @@ class EvalPlan:
             agent=self.eval_agent,
             model=effective_model(self.eval_agent, req.model),
             reasoning_effort=self.eval_reasoning_effort,
+            capture_model_io=req.capture_model_io,
             environment=self.eval_environment,
             concurrency=self.eval_concurrency,
             build_concurrency=req.build_concurrency,

@@ -128,6 +128,9 @@ class RolloutConfig:
     # budget without editing every task definition (#378).
     timeout: int | None = None
     usage_tracking: UsageTrackingConfig = field(default_factory=UsageTrackingConfig)
+    # Opt-in raw provider-body capture. Artifacts contain complete prompts,
+    # tool schemas/results, and model output, so this must never default on.
+    capture_model_io: bool = False
 
     # User-driven progressive-disclosure loop
     user: BaseUser | None = None

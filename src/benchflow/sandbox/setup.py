@@ -534,6 +534,15 @@ def _inject_skills_into_dockerfile(
     Copies skills_dir into environment/_deps/skills/ and appends COPY + symlink
     lines to the Dockerfile. This is more reliable than runtime upload since
     skills are part of the image.
+
+    The shared root and each symlink target are removed before they are
+    recreated.  Clearing the shared root prevents skills already present in a
+    base image from leaking into the requested catalog.  ``ln -sf`` alone is
+    also unsafe here: if a base image already has
+    ``<agent_path> -> <sandbox_dir>``, GNU ``ln`` follows that directory
+    symlink and creates ``<sandbox_dir>/skills -> <sandbox_dir>`` instead of
+    replacing the agent path.  The extra catalog entries or resulting
+    filesystem loop make the skill-fidelity gate fail before the agent starts.
     """
     env_dir = task_path / "environment"
     sandbox_dir = validate_container_mount_path(sandbox_dir)
@@ -555,11 +564,15 @@ def _inject_skills_into_dockerfile(
     lines = [
         "",
         "# Skills directory (injected by benchflow --skills-dir)",
+        f"RUN rm -rf {sandbox_dir} && mkdir -p {sandbox_dir}",
         f"COPY _deps/skills {_docker_copy_dir(sandbox_dir)}",
     ]
     for agent_path in _get_agent_skill_paths():
         parent = str(Path(agent_path).parent)
-        lines.append(f"RUN mkdir -p {parent} && ln -sf {sandbox_dir} {agent_path}")
+        lines.append(
+            f"RUN mkdir -p {parent} && rm -rf {agent_path}"
+            f" && ln -sfn {sandbox_dir} {agent_path}"
+        )
 
     content = dockerfile_path.read_text()
     dockerfile_path.write_text(content + "\n".join(lines) + "\n")
@@ -658,6 +671,7 @@ def _create_sandbox_environment(
     rollout_paths: RolloutPaths,
     preserve_agent_network: bool = False,
     environment_manifest: Any = None,
+    sandbox_user: str | None = "agent",
 ) -> Any:
     """Create a sandbox environment (Docker, Daytona, or Modal).
 
@@ -678,11 +692,24 @@ def _create_sandbox_environment(
         sandbox_type=sandbox_type,
         task_path=task_path,
     )
-    if preserve_agent_network and env_config.allow_internet is False:
+    preserve_network_for_agent = (
+        preserve_agent_network and env_config.allow_internet is False
+    )
+    # NET_ADMIN is only needed when the agent is a distinct unprivileged UID
+    # whose traffic can be owner-filtered. A root agent cannot be isolated
+    # with that rule and would inherit the capability needed to remove it.
+    agent_egress_firewall = preserve_network_for_agent and sandbox_user is not None
+    if preserve_network_for_agent and sandbox_user is None:
+        logger.warning(
+            "No-web task is running its agent as root; preserving model API "
+            "network access without the sandbox-user egress firewall. "
+            "NET_ADMIN will not be granted."
+        )
+    if preserve_network_for_agent:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
-        # no-web policy at the agent layer instead of applying the container
-        # network block for these runs.
+        # no-web policy at the unprivileged agent layer when possible, instead
+        # of applying the container network block for these runs.
         env_config = env_config.model_copy(deep=True)
         env_config.allow_internet = True
 
@@ -715,6 +742,7 @@ def _create_sandbox_environment(
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=manifest_env or None,
+            agent_egress_firewall=agent_egress_firewall,
         )
     elif sandbox_type == "daytona":
         try:

@@ -126,6 +126,7 @@ def rollout_config_from_dict(
         agent=raw.get("agent", "claude-agent-acp"),
         model=raw.get("model"),
         reasoning_effort=raw.get("reasoning_effort"),
+        capture_model_io=bool(raw.get("capture_model_io", False)),
         agent_env=raw.get("agent_env"),
         skills_dir=raw.get("skills_dir"),
         skill_mode=raw.get("skill_mode", SKILL_MODE_NO_SKILL),

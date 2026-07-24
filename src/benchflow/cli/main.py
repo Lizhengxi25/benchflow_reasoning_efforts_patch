@@ -284,6 +284,16 @@ def eval_run(
             help="Agent reasoning/thinking effort when the agent exposes one (e.g. max)",
         ),
     ] = None,
+    capture_model_io: Annotated[
+        bool,
+        typer.Option(
+            "--capture-model-io",
+            help=(
+                "Opt in to full provider request/response body capture. "
+                "Artifacts contain sensitive prompts, tool results, and model output."
+            ),
+        ),
+    ] = False,
     environment: Annotated[
         str | None,
         typer.Option("--sandbox", help=f"Sandbox: {providers_phrase()}"),
@@ -600,6 +610,7 @@ def eval_run(
         agent=agent,
         model=model,
         reasoning_effort=reasoning_effort,
+        capture_model_io=capture_model_io,
         environment=environment,
         usage_tracking=usage_tracking,
         environment_manifest=environment_manifest,
@@ -887,6 +898,8 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
             j._config.model = effective_model(j._config.agent, j._config.model)
         if req.reasoning_effort is not None:
             j._config.reasoning_effort = plan.eval_reasoning_effort
+        if req.capture_model_io:
+            j._config.capture_model_io = True
         if req.environment is not None:
             j._config.environment = plan.eval_environment
         j._config.agent_env = {**j._config.agent_env, **plan.parsed_env}

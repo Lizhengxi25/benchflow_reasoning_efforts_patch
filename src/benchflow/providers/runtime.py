@@ -43,6 +43,7 @@ async def ensure_litellm_runtime(
     sandbox_setup_timeout: int = 120,
     required_skill_names: tuple[str, ...] = (),
     live_trajectory_path: Path | None = None,
+    capture_model_io: bool = False,
 ) -> tuple[dict[str, str], ProviderRuntime | None]:
     from benchflow.providers.litellm_runtime import (
         ensure_litellm_runtime as _ensure_litellm_runtime,
@@ -60,6 +61,7 @@ async def ensure_litellm_runtime(
         sandbox_setup_timeout=sandbox_setup_timeout,
         required_skill_names=required_skill_names,
         live_trajectory_path=live_trajectory_path,
+        capture_model_io=capture_model_io,
     )
 
 

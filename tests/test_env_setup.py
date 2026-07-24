@@ -1,5 +1,6 @@
 """Tests for benchflow.sandbox.setup — Dockerfile skills injection and dep staging."""
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -55,7 +56,10 @@ class TestInjectSkillsIntoDockerfile:
 
         # Dockerfile has COPY line
         content = (task_path / "environment" / "Dockerfile").read_text()
+        reset = "RUN rm -rf /skills && mkdir -p /skills"
+        assert reset in content
         assert "COPY _deps/skills /skills/" in content
+        assert content.index(reset) < content.index("COPY _deps/skills /skills/")
         assert "# Skills directory (injected by benchflow --skills-dir)" in content
 
     def test_appends_symlink_lines_for_agents(self, tmp_path):
@@ -65,9 +69,49 @@ class TestInjectSkillsIntoDockerfile:
         _inject_skills_into_dockerfile(task_path, skills_dir)
 
         content = (task_path / "environment" / "Dockerfile").read_text()
-        # Should have at least one RUN ln -sf line for agent skill paths
-        assert "ln -sf /skills" in content
+        # Rebuild existing discovery links instead of following them into the
+        # shared skill root and creating /skills/skills -> /skills.
+        assert "rm -rf /root/.agents/skills" in content
+        assert "ln -sfn /skills /root/.agents/skills" in content
         assert "mkdir -p" in content
+
+    def test_replaces_preexisting_directory_symlink_without_self_loop(self, tmp_path):
+        """A base-image discovery link must not create ``/skills/skills``.
+
+        SkillsBench base images already contain agent discovery links into the
+        shared skill root.  GNU ``ln -sf`` follows such directory symlinks; this
+        executes the generated Dockerfile command to pin the required
+        replacement semantics rather than only checking its spelling.
+        """
+        task_path = _make_task(tmp_path)
+        skills_dir = _make_skills_dir(tmp_path)
+        sandbox_skills = tmp_path / "sandbox-skills"
+        sandbox_skills.mkdir()
+        agent_path = tmp_path / "root" / ".agents" / "skills"
+        agent_path.parent.mkdir(parents=True)
+        agent_path.symlink_to(sandbox_skills, target_is_directory=True)
+
+        with patch(
+            "benchflow.sandbox.setup._get_agent_skill_paths",
+            return_value=[str(agent_path)],
+        ):
+            _inject_skills_into_dockerfile(
+                task_path,
+                skills_dir,
+                sandbox_dir=str(sandbox_skills),
+            )
+
+        content = (task_path / "environment" / "Dockerfile").read_text()
+        command = next(
+            line.removeprefix("RUN ")
+            for line in content.splitlines()
+            if line.startswith("RUN ") and str(agent_path) in line
+        )
+        subprocess.run(command, shell=True, check=True)
+
+        assert agent_path.is_symlink()
+        assert agent_path.resolve() == sandbox_skills.resolve()
+        assert not (sandbox_skills / "skills").exists()
 
     def test_injects_to_custom_sandbox_dir(self, tmp_path):
         """Guards PR #586 so policy-chosen task skill mounts are baked correctly."""
@@ -79,8 +123,11 @@ class TestInjectSkillsIntoDockerfile:
         )
 
         content = (task_path / "environment" / "Dockerfile").read_text()
+        assert (
+            "RUN rm -rf /opt/benchflow/skill-eval && mkdir -p /opt/benchflow/skill-eval"
+        ) in content
         assert "COPY _deps/skills /opt/benchflow/skill-eval/" in content
-        assert "ln -sf /opt/benchflow/skill-eval" in content
+        assert "ln -sfn /opt/benchflow/skill-eval" in content
 
     def test_rejects_unsafe_sandbox_dir(self, tmp_path):
         """Guards PR #586 against Dockerfile injection from sandbox_dir."""

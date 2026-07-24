@@ -949,6 +949,7 @@ class Rollout:
                 self._rollout_paths,
                 preserve_agent_network=self._disallow_web_tools,
                 environment_manifest=cfg.environment_manifest,
+                sandbox_user=cfg.sandbox_user,
             )
         # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
         # wins over the task's own default. Without this override there is
@@ -976,6 +977,7 @@ class Rollout:
             started_at=self._started_at,
             agent_env=self._agent_env,
             base_image_override=cfg.base_image_override,
+            capture_model_io=cfg.capture_model_io,
             usage_tracking=cfg.usage_tracking.with_env_defaults(),
             concurrency=cfg.concurrency,
             agent_idle_timeout=cfg.agent_idle_timeout,
@@ -1193,6 +1195,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
+            capture_model_io=cfg.capture_model_io,
         )
         sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
         self._is_session_factory = sf_entrypoint is not None
@@ -1230,6 +1233,11 @@ class Rollout:
                 environment=cfg.environment,
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=cfg.primary_reasoning_effort,
+                trusted_llm_gateway_url=(
+                    getattr(self._usage_runtime, "base_url", None)
+                    if getattr(self._usage_runtime, "kind", None) == "litellm"
+                    else None
+                ),
                 mcp_servers=_task_mcp_specs_for_agent(
                     cfg.primary_agent,
                     getattr(self, "_task", None),
@@ -1831,6 +1839,13 @@ class Rollout:
         self._capture_partial_acp_trajectory()
         await self.disconnect()
 
+        if (
+            self._env
+            and getattr(self, "_agent_env", {}).get("BENCHFLOW_CAPTURE_WORKSPACE")
+            == "1"
+        ):
+            await self._capture_workspace_artifact()
+
         if self._env and self._config.export_generated_skills_to:
             try:
                 await self._export_generated_skills()
@@ -1909,6 +1924,62 @@ class Rollout:
             shutil.rmtree(self._task_tmp, ignore_errors=True)
 
         self._phase = "cleaned"
+
+    async def _capture_workspace_artifact(self) -> None:
+        """Archive the stopped agent workspace before sandbox teardown.
+
+        This is an opt-in debug artifact controlled by
+        ``BENCHFLOW_CAPTURE_WORKSPACE=1``. Capture failure is persisted beside
+        the artifact but does not replace the agent/verifier result.
+        """
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        if rollout_dir is None or self._env is None:
+            return
+        artifacts_dir = rollout_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        target = artifacts_dir / "workspace.tgz"
+        error_path = artifacts_dir / "workspace_capture_error.txt"
+        remote = "/tmp/benchflow-workspace.tgz"
+        excludes = (
+            "node_modules",
+            ".venv",
+            "venv",
+            ".git",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            "dist",
+            "build",
+            ".gradle",
+            "target",
+            ".next",
+        )
+        exclude_args = " ".join(f"--exclude={shlex.quote(item)}" for item in excludes)
+        command = (
+            f"tar {exclude_args} -czf {shlex.quote(remote)} "
+            f"-C {shlex.quote(self._agent_cwd)} ."
+        )
+        try:
+            result = await self._env.exec(command, timeout_sec=300)
+            if result.return_code != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    f"workspace tar exited {result.return_code}: {detail}"
+                )
+            await self._env.download_file(remote, target)
+            os.chmod(target, 0o600)
+            error_path.unlink(missing_ok=True)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}\n"
+            error_path.write_text(message, encoding="utf-8")
+            os.chmod(error_path, 0o600)
+            logger.warning("Workspace capture failed: %s", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._env.exec(
+                    f"rm -f {shlex.quote(remote)}",
+                    timeout_sec=10,
+                )
 
     def _finalize_usage_metrics(self) -> None:
         """Prefer LiteLLM usage, otherwise use trusted native ACP usage."""
@@ -2153,6 +2224,7 @@ class Rollout:
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
             required_skill_names=getattr(self, "_required_skill_names", ()),
             live_trajectory_path=rollout_dir / "trajectory" / "llm_trajectory.jsonl",
+            capture_model_io=cfg.capture_model_io,
         )
 
         role_agent_differs = role.agent != cfg.primary_agent
@@ -2240,6 +2312,11 @@ class Rollout:
                 environment=cfg.environment,
                 agent_cwd=self._agent_cwd,
                 reasoning_effort=role.reasoning_effort,
+                trusted_llm_gateway_url=(
+                    getattr(self._usage_runtime, "base_url", None)
+                    if getattr(self._usage_runtime, "kind", None) == "litellm"
+                    else None
+                ),
                 mcp_servers=_task_mcp_specs_for_agent(
                     role.agent, getattr(self, "_task", None), agent_cfg
                 ),
@@ -2495,6 +2572,7 @@ class Rollout:
             agent=self._config.primary_agent,
             agent_name=self._agent_name,
             model=self._config.primary_model,
+            capture_model_io=self._config.capture_model_io,
             n_tool_calls=self._n_tool_calls,
             prompts=prompts,
             error=self._error,
